@@ -191,7 +191,8 @@ class VoiceModel(nn.Module):
 
     def load(self):
         state_dict = torch.load('models/' + self.__repr__(),
-                                map_location=lambda storage, loc: storage)
+                                map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+                                weights_only=True)
         print(f'Loading {self.__repr__()}')
         self.load_state_dict(state_dict)
 

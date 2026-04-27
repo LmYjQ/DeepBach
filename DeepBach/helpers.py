@@ -3,31 +3,25 @@
 """
 
 import torch
-from torch.autograd import Variable
 
 
-def cuda_variable(tensor, volatile=False):
+def cuda_variable(tensor):
     if torch.cuda.is_available():
-        return Variable(tensor.cuda(), volatile=volatile)
+        return tensor.cuda()
     else:
-        return Variable(tensor, volatile=volatile)
+        return tensor
 
 
-def to_numpy(variable: Variable):
+def to_numpy(tensor):
     if torch.cuda.is_available():
-        return variable.data.cpu().numpy()
+        return tensor.cpu().numpy()
     else:
-        return variable.data.numpy()
+        return tensor.numpy()
 
 
-def init_hidden(num_layers, batch_size, lstm_hidden_size,
-                volatile=False):
+def init_hidden(num_layers, batch_size, lstm_hidden_size):
     hidden = (
-        cuda_variable(
-            torch.randn(num_layers, batch_size, lstm_hidden_size),
-            volatile=volatile),
-        cuda_variable(
-            torch.randn(num_layers, batch_size, lstm_hidden_size),
-            volatile=volatile)
+        cuda_variable(torch.randn(num_layers, batch_size, lstm_hidden_size)),
+        cuda_variable(torch.randn(num_layers, batch_size, lstm_hidden_size))
     )
     return hidden
