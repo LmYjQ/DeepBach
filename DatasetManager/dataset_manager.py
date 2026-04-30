@@ -2,7 +2,7 @@ import os
 
 import music21
 import torch
-from DatasetManager.chorale_dataset import ChoraleDataset
+from DatasetManager.chorale_dataset import ChoraleDataset, ChoraleBeatsDataset
 from DatasetManager.helpers import ShortChoraleIteratorGen
 from DatasetManager.metadata import TickMetadata, \
     FermataMetadata, \
@@ -17,12 +17,12 @@ from DatasetManager.music_dataset import MusicDataset
 all_datasets = {
     'bach_chorales':
         {
-            'dataset_class_name': ChoraleDataset,
+            'dataset_class_name': ChoraleBeatsDataset,
             'corpus_it_gen':      music21.corpus.chorales.Iterator
         },
     'bach_chorales_test':
         {
-            'dataset_class_name': ChoraleDataset,
+            'dataset_class_name': ChoraleBeatsDataset,
             'corpus_it_gen':      ShortChoraleIteratorGen()
         },
 }
