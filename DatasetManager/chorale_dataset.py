@@ -1,8 +1,6 @@
 import music21
 import torch
 import numpy as np
-from concurrent.futures import ProcessPoolExecutor
-import multiprocessing
 
 from music21 import interval, stream
 from torch.utils.data import TensorDataset
@@ -210,7 +208,7 @@ class ChoraleDataset(MusicDataset):
     def make_tensor_dataset(self):
         """
         Implementation of the make_tensor_dataset abstract base class
-        Parallel version using multiprocessing
+        Uses sequential processing with chunksize for memory efficiency
         """
         print('Making tensor dataset')
         self.compute_index_dicts()
@@ -218,9 +216,8 @@ class ChoraleDataset(MusicDataset):
 
         # Prepare worker arguments
         chorales_list = list(self.iterator_gen())
-        # Limit workers to avoid memory issues - use at most 8 workers or 1 per 4 chorales
-        max_workers = min(8, max(1, len(chorales_list) // 4))
-        num_workers = min(max_workers, multiprocessing.cpu_count())
+        # Use sequential processing with chunksize for memory efficiency
+        # Parallel processing caused memory issues due to large objects being pickled
 
         worker_args = [
             (
@@ -237,16 +234,16 @@ class ChoraleDataset(MusicDataset):
             for i, chorale in enumerate(chorales_list)
         ]
 
-        print(f'Processing {len(chorales_list)} chorales with {num_workers} workers')
+        print(f'Processing {len(chorales_list)} chorales sequentially with chunksize=8')
         chorale_tensors_all = []
         metadata_tensors_all = []
 
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            results = list(tqdm(
-                executor.map(_process_chorale_worker, worker_args),
-                total=len(worker_args),
-                desc='Processing chorales'
-            ))
+        # Use chunksize for better memory efficiency in sequential processing
+        results = list(tqdm(
+            map(_process_chorale_worker, worker_args),
+            total=len(worker_args),
+            desc='Processing chorales'
+        ))
 
         # Aggregate results
         for chorale_tensors, metadata_tensors in results:
