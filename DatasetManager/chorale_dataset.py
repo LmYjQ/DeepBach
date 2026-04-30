@@ -218,7 +218,9 @@ class ChoraleDataset(MusicDataset):
 
         # Prepare worker arguments
         chorales_list = list(self.iterator_gen())
-        num_workers = min(multiprocessing.cpu_count(), len(chorales_list))
+        # Limit workers to avoid memory issues - use at most 8 workers or 1 per 4 chorales
+        max_workers = min(8, max(1, len(chorales_list) // 4))
+        num_workers = min(max_workers, multiprocessing.cpu_count())
 
         worker_args = [
             (
