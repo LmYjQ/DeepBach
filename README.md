@@ -138,3 +138,18 @@ Please consider citing this work or emailing me if you use DeepBach in musical p
   url = 	 {http://proceedings.mlr.press/v70/hadjeres17a.html},
 }
 ```
+
+
+
+# 1. 进入目录
+cd d:/code/music/deepbach_learn/code
+
+# 2. 安装依赖（如果未安装）
+pip install music21 torch click tqdm
+
+# 3. 运行（首次会下载数据，约几十MB）
+python deepBach.py --train --num_epochs 5
+
+# 4. 生成阶段不需要 --train，直接生成
+python deepBach.py
+

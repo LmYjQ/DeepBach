@@ -107,8 +107,8 @@ class ChoraleDataset(MusicDataset):
                 transposition = self.min_max_transposition(current_subseq_ranges)
                 min_transposition_subsequence, max_transposition_subsequence = transposition
 
-                for semi_tone in range(min_transposition_subsequence,
-                                        max_transposition_subsequence + 1):
+                for semi_tone in range(int(min_transposition_subsequence),
+                                        int(max_transposition_subsequence) + 1):
                     start_tick = int(offsetStart * self.subdivision)
                     end_tick = int(offsetEnd * self.subdivision)
 
