@@ -96,7 +96,7 @@ class ChoraleDataset(MusicDataset):
                     notes_in_range = []
                     for element in voice.flat.getElementsByOffset(
                             offsetStart, offsetEnd, mustBeginInSpan=False):
-                        if element.isNote:
+                        if hasattr(element, 'isNote') and element.isNote:
                             notes_in_range.append(element.pitch.ps)
                     if notes_in_range:
                         current_subseq_ranges.append((min(notes_in_range), max(notes_in_range)))
