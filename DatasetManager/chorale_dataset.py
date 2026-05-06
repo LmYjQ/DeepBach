@@ -64,19 +64,68 @@ class ChoraleDataset(MusicDataset):
 
     def make_tensor_dataset(self):
         """
-        Implementation of the make_tensor_dataset abstract base class
-        Sequential processing matching original ChoraleBeatsDataset logic
+        创建TensorDataset - 完整的音乐数据处理流程 (Tick-level版本)
+
+        ==============================================================
+        与Beat-level版本的区别
+        ==============================================================
+        - Tick-level: 每1/subdivision拍采样一次（subdivision=4时，每1/4拍=4个样本/拍）
+        - Beat-level: 每1拍采样一次（1个样本/拍）
+        - Tick-level数据量约是Beat-level的4倍
+
+        ==============================================================
+        输出形状
+        ==============================================================
+        - chorale_tensor:   (N, 4, 32)   # 与Beat-level相同
+        - metadata_tensor: (N, 4, 32, 4) # 与Beat-level相同
+
+        ==============================================================
+        处理流程差异
+        ==============================================================
+        Step 1-2: 与Beat-level相同（计算索引表和音域）
+
+        Step 3: 遍历每首赞美诗
+        ---------------------
+        for chorale_id, chorale in enumerate(corpus):
+
+            差异: 步长为one_tick = 1/subdivision = 0.25拍
+            for offsetStart in np.arange(..., one_tick):
+                # 每次前进1/4拍，而非1拍
+
+            差异: 时间偏移循环
+            - Beat-level: 每beat一个位置
+            - Tick-level: 每tick(1/4 beat)一个位置
+            - 数据量约4倍
+
+        ==============================================================
+        音乐含义
+        ==============================================================
+        Tick-level采样更精细，能捕获:
+        - 16分音符级别的节奏变化
+        - 短音符的精确位置
+        - 装饰音等细节
+
+        但训练样本数也增加4倍，内存压力更大。
+        生成时可用tick-level精细化输出。
         """
-        print('Making tensor dataset')
+        print('='*60)
+        print('开始创建Tensor数据集 (Tick-level)')
+        print(f'  序列长度: {self.sequences_size} beats')
+        print(f'  细分: {self.subdivision} (每beat的tick数)')
+        print(f'  声部数: {self.num_voices}')
+        print(f'  元数据: {[m.name for m in self.metadatas]}')
+        print('='*60)
+
         self.compute_index_dicts()
         self.compute_voice_ranges()
         one_tick = 1 / self.subdivision
         chorale_tensor_dataset = []
         metadata_tensor_dataset = []
 
+        total_chorales = 351
         for chorale_id, chorale in tqdm(enumerate(self.iterator_gen()),
-                                         total=351,
-                                         desc='Processing chorales'):
+                                         total=total_chorales,
+                                         desc='处理赞美诗'):
             # precompute all possible transpositions and corresponding metadatas
             chorale_transpositions = {}
             metadatas_transpositions = {}
@@ -121,6 +170,12 @@ class ChoraleDataset(MusicDataset):
                                 semi_tone=semi_tone)
                             chorale_transpositions[semi_tone] = chorale_tensor
                             metadatas_transpositions[semi_tone] = metadata_tensor
+
+                            # 打印每次计算的转置张量形状
+                            if chorale_id < 3:
+                                print(f'    赞美诗{chorale_id} 转置{semi_tone}: '
+                                      f'chorale_tensor={chorale_tensor.shape}, '
+                                      f'metadata={metadata_tensor.shape}')
                         else:
                             chorale_tensor = chorale_transpositions[semi_tone]
                             metadata_tensor = metadatas_transpositions[semi_tone]
@@ -137,13 +192,23 @@ class ChoraleDataset(MusicDataset):
                     except (KeyError, ValueError):
                         pass
 
+        # 合并所有样本
+        print(f'\n合并所有样本...')
         chorale_tensor_dataset = torch.cat(chorale_tensor_dataset, 0)
         metadata_tensor_dataset = torch.cat(metadata_tensor_dataset, 0)
 
         dataset = TensorDataset(chorale_tensor_dataset,
                                 metadata_tensor_dataset)
 
-        print(f'Sizes: {chorale_tensor_dataset.size()}, {metadata_tensor_dataset.size()}')
+        # 打印最终数据集统计信息
+        print('='*60)
+        print('Tensor数据集创建完成 (ChoraleDataset - tick-level)!')
+        print(f'  赞美诗张量形状: {chorale_tensor_dataset.size()}')
+        print(f'  元数据张量形状: {metadata_tensor_dataset.size()}')
+        print(f'  总样本数: {len(dataset)}')
+        print(f'  每个样本: {self.num_voices}个声部, {self.sequences_size * self.subdivision} ticks')
+        print('='*60)
+
         return dataset
 
     def transposed_score_and_metadata_tensors(self, score, semi_tone):
@@ -569,16 +634,132 @@ class ChoraleBeatsDataset(ChoraleDataset):
 
     def make_tensor_dataset(self):
         """
-        Implementation of the make_tensor_dataset abstract base class
+        创建TensorDataset - 完整的音乐数据处理流程
+
+        ==============================================================
+        数据处理流程概述
+        ==============================================================
+
+        1. 输入: music21格式的巴赫众赞歌（352首4声部合唱曲）
+
+        2. 处理单位:
+           - sequences_size=8: 每次采样8拍长度的片段
+           - subdivision=4: 每拍细分为4个tick（共32个tick）
+           - voice_ids=[0,1,2,3]: 4个声部
+
+        3. 输出形状:
+           - chorale_tensor:   (N, 4, 32)  # N=样本数, 4=声部, 32= ticks
+           - metadata_tensor:  (N, 4, 32, 4) # 4=声部, 32=ticks, 4=元数据类型
+
+        ==============================================================
+        逐步处理流程（以beat-level为例）
+        ==============================================================
+
+        Step 1: compute_index_dicts()
+        ------------------------------
+        - 遍历所有赞美诗，收集每个声部的所有音高
+        - 建立 note <-> index 双向映射表
+        - 输出: note2index_dicts[voice_id] = {'C4': 12, 'D4': 14, ...}
+
+        Step 2: compute_voice_ranges()
+        ------------------------------
+        - 计算每个声部的音域范围（最低音 ~ 最高音）
+        - 用于后续判断是否需要转调
+        - 输出: voice_ranges = [(min_midi, max_midi), ...]  # 4个声部
+
+        Step 3: 遍历每首赞美诗
+        ---------------------
+        for chorale_id, chorale in enumerate(corpus):
+
+            Step 3a: 遍历所有时间偏移（每beat一个位置）
+            - offsetStart从-lowestOffset开始，到highestOffset
+            - 每次前进one_beat=1拍
+
+            Step 3b: 确定转调范围
+            - 检查当前片段中每个声部的音高
+            - 计算保持音域不离谱的转调范围（如-6到+5半音）
+
+            Step 3c: 对每个转调进行采样
+            for semi_tone in range(min_transposition, max_transposition + 1):
+
+                transposed_score_and_metadata_tensors(chorale, semi_tone)
+                -------------------------------------------------
+                - 输入: 原始赞美诗 + 转调半音数
+                - 处理: 用music21.transpose()转调
+                - 输出形状:
+                    chorale_tensor.shape:  (4, total_ticks)  # 整首赞美诗的音高序列
+                    metadata_tensor.shape: (4, total_ticks, num_metadatas)
+
+                extract_score_tensor_with_padding(tensor, start_tick, end_tick)
+                ---------------------------------------------------------
+                - 输入: 整首赞美诗张量 + 起止tick
+                - 处理: 切片[start_tick:end_tick]，不足则padding
+                - 输出形状: (4, 32)  # 8beats * 4ticks/beat = 32 ticks
+
+                extract_metadata_with_padding(metadata_tensor, start_tick, end_tick)
+                --------------------------------------------------------------
+                - 输入: 整首赞美诗元数据 + 起止tick
+                - 处理: 切片，起止位置padding
+                - 输出形状: (4, 32, 4)  # 4声部 x 32ticks x 4种元数据
+
+            输出: 每个(转调, 时间偏移)组合产生一个样本
+            - chorale_tensor:   (1, 4, 32)  # 加batch维度
+            - metadata_tensor:  (1, 4, 32, 4)
+
+        Step 4: 合并所有样本
+        -------------------
+        torch.cat(chorale_tensor_dataset, dim=0)   → (N, 4, 32)
+        torch.cat(metadata_tensor_dataset, dim=0)  → (N, 4, 32, 4)
+
+        ==============================================================
+        音乐含义解释
+        ==============================================================
+
+        1. 为什么是4声部？
+           巴赫众赞歌是4部合唱：女高(Soprano)、女低(Alto)、男高(Tenor)、男低(Bass)
+
+        2. subdivision=4的意义
+           - 1拍 = 4个16分音符
+           - 每个16分音符一个时间步
+           - 8拍序列 = 32个时间步
+
+        3. 转调增强
+           - 每首赞美诗生成多个转调版本（-6到+5半音）
+           - 让模型学习不同调性，而非死记特定音高
+           - 音乐上：这相当于"移调"练习
+
+        4. metadata的含义
+           - TickMetadata:   tick在序列中的位置(0~31)
+           - FermataMetadata: 是否有延音符号
+           - KeyMetadata:    调性（C大调/D大调等）
+           - 最后一个维度是voice_id(0~3)，标识是哪个声部
+
+        5. 数据量估算
+           - 352首赞美诗
+           - 每首约50拍，序列8拍，步长1拍 → 约42个片段/首
+           - 转调约12种
+           - 总样本 ≈ 352 * 42 * 12 ≈ 177,000 个训练样本
         """
-        # todo check on chorale with Chord
-        print('Making tensor dataset')
+        print('='*60)
+        print('开始创建Tensor数据集')
+        print(f'  序列长度: {self.sequences_size} beats')
+        print(f'  细分: {self.subdivision} (每beat的tick数)')
+        print(f'  声部数: {self.num_voices}')
+        print(f'  元数据: {[m.name for m in self.metadatas]}')
+        print('='*60)
+
         self.compute_index_dicts()
         self.compute_voice_ranges()
+
+        print(f'\n开始处理赞美诗 (Beat-level)...')
         one_beat = 1.
         chorale_tensor_dataset = []
         metadata_tensor_dataset = []
-        for chorale_id, chorale in tqdm(enumerate(self.iterator_gen())):
+
+        total_chorales = 351  # 用于进度显示
+        for chorale_id, chorale in tqdm(enumerate(self.iterator_gen()),
+                                        total=total_chorales,
+                                        desc='处理赞美诗'):
 
             # precompute all possible transpositions and corresponding metadatas
             chorale_transpositions = {}
@@ -596,6 +777,11 @@ class ChoraleBeatsDataset(ChoraleDataset):
                     offsetStart=offsetStart,
                     offsetEnd=offsetEnd)
 
+                # 打印当前子序列信息
+                if chorale_id < 3:  # 只打印前3首赞美诗的详细信息
+                    print(f'\n  赞美诗 {chorale_id}: 偏移 {offsetStart:.2f} -> {offsetEnd:.2f}')
+                    print(f'    声部范围: {current_subseq_ranges}')
+
                 transposition = self.min_max_transposition(current_subseq_ranges)
                 min_transposition_subsequence, max_transposition_subsequence = transposition
 
@@ -603,6 +789,10 @@ class ChoraleBeatsDataset(ChoraleDataset):
                                        max_transposition_subsequence + 1):
                     start_tick = int(offsetStart * self.subdivision)
                     end_tick = int(offsetEnd * self.subdivision)
+
+                    # 打印转置信息（只显示前3首）
+                    if chorale_id < 3 and semi_tone != 0:
+                        print(f'    转置半音: {semi_tone}')
 
                     try:
                         # compute transpositions lazily
@@ -617,6 +807,11 @@ class ChoraleBeatsDataset(ChoraleDataset):
                             metadatas_transpositions.update(
                                 {semi_tone:
                                      metadata_tensor})
+
+                            # 打印张量形状（只显示第一次计算）
+                            if chorale_id < 3:
+                                print(f'      张量形状: chorale={chorale_tensor.shape}, '
+                                      f'metadata={metadata_tensor.shape}')
                         else:
                             chorale_tensor = chorale_transpositions[semi_tone]
                             metadata_tensor = metadatas_transpositions[semi_tone]
@@ -638,11 +833,21 @@ class ChoraleBeatsDataset(ChoraleDataset):
                         # some problems may occur with the key analyzer
                         print(f'KeyError with chorale {chorale_id}')
 
+        # 合并所有样本
+        print(f'\n合并所有样本...')
         chorale_tensor_dataset = torch.cat(chorale_tensor_dataset, 0)
         metadata_tensor_dataset = torch.cat(metadata_tensor_dataset, 0)
 
         dataset = TensorDataset(chorale_tensor_dataset,
                                 metadata_tensor_dataset)
 
-        print(f'Sizes: {chorale_tensor_dataset.size()}, {metadata_tensor_dataset.size()}')
+        # 打印最终数据集统计信息
+        print('='*60)
+        print('Tensor数据集创建完成 (ChoraleBeatsDataset - beat-level)!')
+        print(f'  赞美诗张量形状: {chorale_tensor_dataset.size()}')
+        print(f'  元数据张量形状: {metadata_tensor_dataset.size()}')
+        print(f'  总样本数: {len(dataset)}')
+        print(f'  每个样本: {self.num_voices}个声部, {self.sequences_size * self.subdivision} ticks')
+        print('='*60)
+
         return dataset

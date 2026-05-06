@@ -37,7 +37,7 @@ class Predictor(BasePredictor):
 
         dataset_manager = DatasetManager()
 
-        metadatas = [FermataMetadata(), TickMetadata(subdivision=4), KeyMetadata()]
+        metadatas = [TickMetadata(subdivision=4), FermataMetadata(), KeyMetadata()]
         chorale_dataset_kwargs = {
             "voice_ids": [0, 1, 2, 3],
             "metadatas": metadatas,

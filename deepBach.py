@@ -49,8 +49,8 @@ def main(note_embedding_dim,
     dataset_manager = DatasetManager()
 
     metadatas = [
-       FermataMetadata(),
        TickMetadata(subdivision=4),
+       FermataMetadata(),
        KeyMetadata()
     ]
     chorale_dataset_kwargs = {
