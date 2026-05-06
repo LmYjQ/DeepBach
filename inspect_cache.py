@@ -51,8 +51,7 @@ def main():
                     print(f"\n  音高索引表 (note2index):")
                     for i, d in enumerate(dataset.note2index_dicts):
                         print(f"    声部{i}: {len(d)} 个音高条目")
-                        # if i == 0:  # 只显示第一个声部的样例
-                        samples = list(d.items())[:5]
+                        samples = list(d.items())[:20]
                         print(f"      样例: {samples}")
 
                 print(f"\n  缓存的tensor_dataset是否加载: {dataset._tensor_dataset is not None}")
@@ -94,16 +93,20 @@ def main():
 
                     print(f"\n    chorale_tensor (音高索引):")
                     print(f"      shape: {chorale.shape}")
-                    print(f"      声部0(女高)前10个tick: {chorale[0, :10].tolist()}")
-                    print(f"      声部1(女低)前10个tick: {chorale[1, :10].tolist()}")
-                    print(f"      声部2(男高)前10个tick: {chorale[2, :10].tolist()}")
-                    print(f"      声部3(男低)前10个tick: {chorale[3, :10].tolist()}")
+                    print(f"      声部0(女高)前10个tick: {chorale[10, 0, :10].tolist()}")
+                    print(f"      声部1(女低)前10个tick: {chorale[10, 1, :10].tolist()}")
+                    print(f"      声部2(男高)前10个tick: {chorale[10, 2, :10].tolist()}")
+                    print(f"      声部3(男低)前10个tick: {chorale[10, 3, :10].tolist()}")
 
                     print(f"\n    metadata_tensor (元数据):")
                     print(f"      shape: {metadata.shape}")
-                    print(f"      声部0前5个tick的元数据:")
+                    print(f"      元数据类型: ['tick', 'fermata', 'key', 'padding']")
+                    print(f"\n      声部0前5个tick的各元数据值:")
                     for tick in range(5):
-                        print(f"        tick {tick}: {metadata[0, 0, tick].tolist()}")
+                        tick_val = metadata[0, 0, tick, 0].item()
+                        fermata_val = metadata[0, 0, tick, 1].item()
+                        key_val = metadata[0, 0, tick, 2].item()
+                        print(f"        tick {tick}: tick={tick_val}, fermata={fermata_val}, key={key_val}")
 
                     # 显示原始音符名
                     print(f"\n    将音高索引转回音符名 (声部0前10个tick):")
