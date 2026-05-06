@@ -70,7 +70,7 @@ class DatasetManager:
         dataset = dataset_class_name(**kwargs)
         if os.path.exists(dataset.filepath):
             print(f'Loading {dataset.__repr__()} from {dataset.filepath}')
-            dataset = torch.load(dataset.filepath)
+            dataset = torch.load(dataset.filepath, map_location='cpu', weights_only=False)
             dataset.cache_dir = self.cache_dir
             print(f'(the corresponding TensorDataset is not loaded)')
         else:
