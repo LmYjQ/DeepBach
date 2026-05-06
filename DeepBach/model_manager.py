@@ -319,7 +319,6 @@ class DeepBach:
                         time_indexes_ticks[voice_index][batch_index]
                     ] = int(pitch)
 
-            tensor_chorale = cuda_variable(tensor_chorale_no_cuda.clone(),
-                                           volatile=True)
+            tensor_chorale = cuda_variable(tensor_chorale_no_cuda.clone())
 
         return tensor_chorale_no_cuda[0, :, timesteps_ticks:-timesteps_ticks]

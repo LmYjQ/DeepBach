@@ -765,13 +765,18 @@ class ChoraleBeatsDataset(ChoraleDataset):
             chorale_transpositions = {}
             metadatas_transpositions = {}
 
-            # main loop
+            # main loop: 遍历所有时间偏移位置，每隔 one_beat (1拍) 采样一次
             for offsetStart in np.arange(
                     chorale.flat.lowestOffset -
                     (self.sequences_size - one_beat),
                     chorale.flat.highestOffset,
                     one_beat):
+                # offsetStart: 当前采样窗口的起始位置（以拍为单位）
+                # offsetEnd: 窗口结束位置 = 起始位置 + 序列长度
                 offsetEnd = offsetStart + self.sequences_size
+
+                # 计算当前子序列中每个声部的音域范围
+                # 用于后续判断可以安全地进行哪些转调（避免声部超出音域）
                 current_subseq_ranges = self.voice_range_in_subsequence(
                     chorale,
                     offsetStart=offsetStart,

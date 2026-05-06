@@ -88,8 +88,7 @@ def main(note_embedding_dim,
         sequence_length_ticks=sequence_length_ticks,
     )
     score.show('txt')
-    score.show()
-
+    score.write('musicxml.pdf', 'output.pdf')
 
 if __name__ == '__main__':
     main()

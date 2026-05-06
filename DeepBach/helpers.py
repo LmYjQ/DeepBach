@@ -14,9 +14,9 @@ def cuda_variable(tensor):
 
 def to_numpy(tensor):
     if torch.cuda.is_available():
-        return tensor.cpu().numpy()
+        return tensor.detach().cpu().numpy()
     else:
-        return tensor.numpy()
+        return tensor.detach().numpy()
 
 
 def init_hidden(num_layers, batch_size, lstm_hidden_size):
