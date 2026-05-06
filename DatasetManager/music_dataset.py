@@ -126,7 +126,7 @@ class MusicDataset(ABC):
         if self._tensor_dataset is None:
             if self.tensor_dataset_is_cached():
                 print(f'Loading TensorDataset for {self.__repr__()}')
-                self._tensor_dataset = torch.load(self.tensor_dataset_filepath)
+                self._tensor_dataset = torch.load(self.tensor_dataset_filepath, map_location='cpu', weights_only=False)
             else:
                 print(f'Creating {self.__repr__()} TensorDataset'
                       f' since it is not cached')
