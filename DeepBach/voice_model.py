@@ -155,6 +155,7 @@ class VoiceModel(nn.Module):
         batch_size, timesteps_right_ticks, num_voices = notes_or_metas[2].size()
 
         left, center, right = notes_or_metas
+
         # center has self.num_voices - 1 voices
         left_embedded = torch.cat([
             embeddings[voice_id](left[:, :, voice_id])[:, :, None, :]
@@ -186,14 +187,20 @@ class VoiceModel(nn.Module):
         return left_embedded, center_embedded, right_embedded
 
     def save(self):
-        torch.save(self.state_dict(), 'models/' + self.__repr__())
-        print(f'Model {self.__repr__()} saved')
+        import os
+        os.makedirs('models', exist_ok=True)
+        safe_name = f"voicemodel_{self.main_voice_index}"
+        torch.save(self.state_dict(), f'models/{safe_name}.pt')
+        print(f'Model saved to models/{safe_name}.pt')
 
     def load(self):
-        state_dict = torch.load('models/' + self.__repr__(),
+        import os
+        os.makedirs('models', exist_ok=True)
+        safe_name = f"voicemodel_{self.main_voice_index}"
+        state_dict = torch.load(f'models/{safe_name}.pt',
                                 map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
                                 weights_only=True)
-        print(f'Loading {self.__repr__()}')
+        print(f'Loading models/{safe_name}.pt')
         self.load_state_dict(state_dict)
 
     def __repr__(self):
@@ -273,8 +280,10 @@ class VoiceModel(nn.Module):
             acc = self.accuracy(weights=weights,
                                 target=label)
 
-            average_loss += loss.item()
+            batch_loss = loss.item()
+            average_loss += batch_loss
             average_acc += acc.item()
+            print(f'  [{phase}] batch loss: {batch_loss:.4f}, acc: {acc.item()/100:.2%}')
 
         average_loss /= len(dataloader)
         average_acc /= len(dataloader)

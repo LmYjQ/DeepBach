@@ -109,7 +109,9 @@ def create_tensor_dataset(midi_sequence, duration_sequence, is_articulated, sequ
 
     Returns:
         chorale_tensor: (N, 1, sequence_size * subdivision) 每一个元素是音高，或者slur延长记号， 长度是节拍数*细分数
-        metadata_tensor: (N, 1, sequence_size * subdivision, 2) 每个元素是[tick_position, 声部编号]，tick_position按照细分数递增，表示时值到多少了
+        metadata_tensor: (N, 1, sequence_size * subdivision, num_metadata) DeepBach格式的metadata
+            num_metadata = 6 (IsPlaying + Tick + Mode + Key + Fermata + voice_id)
+            Key固定为D major (0)
     """
     from DatasetManager.helpers import SLUR_SYMBOL, START_SYMBOL, END_SYMBOL, REST_SYMBOL
 
@@ -123,16 +125,6 @@ def create_tensor_dataset(midi_sequence, duration_sequence, is_articulated, sequ
         note_set.add(note_name)
 
     # 创建映射表
-    # note_list = sorted(list(note_set), key=lambda x: (
-    #     0 if x == SLUR_SYMBOL else
-    #     1 if x == START_SYMBOL else
-    #     2 if x == END_SYMBOL else
-    #     3 if x == REST_SYMBOL else
-    #     4 if isinstance(x, str) else
-    #     5
-    # ))
-
-    # 重新排列，把特殊符号放前面
     special_symbols = [SLUR_SYMBOL, START_SYMBOL, END_SYMBOL, REST_SYMBOL]
     special_symbols.sort()
 
@@ -173,8 +165,26 @@ def create_tensor_dataset(midi_sequence, duration_sequence, is_articulated, sequ
     print(f"  序列长度: {sequence_size} 拍 = {sequence_length_ticks} ticks")
     print(f"  subdivision: {subdivision} (每拍{subdivision}个tick)")
 
+    # 预先计算所有metadata类型
+    # IsPlaying: 1=正在演奏, 0=休止
+    is_playing = (midi_sequence > 0).astype(int)
+
+    # Tick: 0 到 subdivision-1 的位置循环
+    tick_positions = np.arange(total_ticks) % subdivision
+
+    # Mode: 1=D major (其他=0, 大调=1, 小调=2)
+    MODE_MAJOR = 1
+    mode_array = np.full(total_ticks, MODE_MAJOR)
+
+    # Key: D major有2个升号，2 + 7 + 1 = 10
+    KEY_D_MAJOR = 10  # 2 sharps = index 10
+    key_array = np.full(total_ticks, KEY_D_MAJOR)
+
+    # Fermata: 0=无延长记号
+    FERMATA_NONE = 0
+    fermata_array = np.full(total_ticks, FERMATA_NONE)
+
     # 滑动窗口采样
-    # 步长为1拍
     for start_tick in range(0, total_ticks - sequence_length_ticks + 1, subdivision):
         end_tick = start_tick + sequence_length_ticks
 
@@ -189,30 +199,42 @@ def create_tensor_dataset(midi_sequence, duration_sequence, is_articulated, sequ
             articulated = window_articulated[i]
 
             if pitch == 0:
-                # 休止符
                 idx = note2index.get(REST_SYMBOL, note2index.get('0'))
             elif articulated == 0:
-                # 延续音符
                 idx = note2index.get(SLUR_SYMBOL)
             else:
-                # 新音符起点
                 note_name = str(pitch)
                 idx = note2index.get(note_name, note2index.get(REST_SYMBOL))
             voice_tensor.append(idx)
 
         voice_tensor = np.array(voice_tensor).reshape(1, -1)  # (1, ticks)
-        
-        # 创建metadata (tick位置)
-        tick_positions = np.arange(sequence_length_ticks) % subdivision
-        voice_metadata = np.stack([
-            tick_positions,
-            np.full(sequence_length_ticks, voice_id)
-        ], axis=1)
+
+        # 创建DeepBach格式的metadata (每种metadata一行)
+        # metadata顺序: IsPlaying, Tick, Mode, Key, Fermata, voice_id
+        window_is_playing = is_playing[start_tick:end_tick].reshape(1, -1)
+        window_tick_pos = tick_positions[start_tick:end_tick].reshape(1, -1)
+        window_mode = mode_array[start_tick:end_tick].reshape(1, -1)
+        window_key = key_array[start_tick:end_tick].reshape(1, -1)
+        window_fermata = fermata_array[start_tick:end_tick].reshape(1, -1)
+        window_voice_id = np.full((1, sequence_length_ticks), voice_id)
+
+        # 拼接所有metadata: (6, sequence_length_ticks)
+        voice_metadata = np.concatenate([
+            window_is_playing,
+            window_tick_pos,
+            window_mode,
+            window_key,
+            window_fermata,
+            window_voice_id
+        ], axis=0)
+
+        # 转置为 (sequence_length_ticks, 6) 再unsqueeze为 (1, sequence_length_ticks, 6)
+        voice_metadata = np.transpose(voice_metadata, (1, 0))  # (ticks, 6)
+        voice_metadata = voice_metadata[np.newaxis, :, :]  # (1, ticks, 6)
 
         chorale_tensor_dataset.append(voice_tensor)
         metadata_tensor_dataset.append(voice_metadata)
-        # print(chorale_tensor_dataset)
-        # print(metadata_tensor_dataset)
+
     # 合并
     chorale_tensor = np.array(chorale_tensor_dataset)
     metadata_tensor = np.array(metadata_tensor_dataset)
@@ -220,6 +242,7 @@ def create_tensor_dataset(midi_sequence, duration_sequence, is_articulated, sequ
     print(f"\n输出形状:")
     print(f"  chorale_tensor: {chorale_tensor.shape}")
     print(f"  metadata_tensor: {metadata_tensor.shape}")
+    print(f"  metadata类型: IsPlaying, Tick, Mode, Key(D major=0), Fermata, voice_id")
 
     return (chorale_tensor, metadata_tensor,
             note2index, index2note)
@@ -290,6 +313,12 @@ def preprocess_json_file(json_path, output_dir, sequence_size=8, subdivision=4):
         'subdivision': subdivision,
         'chorale_tensor': chorale_tensor,
         'metadata_tensor': metadata_tensor,
+        'metadata_info': {
+            'types': ['IsPlaying', 'Tick', 'Mode', 'Key', 'Fermata', 'voice_id'],
+            'Mode_values': {'other': 0, 'major': 1, 'minor': 2},
+            'Key_values': {f'shifts_{i-7}': i for i in range(15)},  # -7 to +7 mapped to 0-14
+            'Key_fixed': 'D major (2 sharps, index=10)',
+        },
     }
 
     torch.save(dataset_dict, output_path)
@@ -359,17 +388,17 @@ def verify_tensor_dataset(json_path, tensor_path, subdivision=8, n=20):
 
     from DatasetManager.helpers import SLUR_SYMBOL, START_SYMBOL, END_SYMBOL, REST_SYMBOL
 
-    print(f"chorale_tensor (前{n}行):")
-    for i, row in enumerate(chorale_tensor[:n]):
-        row_data = row[0].tolist()  # (64,) 音高索引序列
+    print(f"\n--- 前{n}个样本 ---")
+    for i in range(min(n, len(chorale_tensor))):
+        row_data = chorale_tensor[i][0].tolist()  # (64,) 音高索引序列
         # 转为简谱格式 {value}_{octave}
         original_list = []
         for idx in row_data:
             note_name = index2note.get(int(idx), '?')
             if note_name == REST_SYMBOL:
-                original_list.append('0_0')  # 休止符
+                original_list.append('0_0')
             elif note_name == SLUR_SYMBOL:
-                original_list.append('_')  # 延长记号
+                original_list.append('_')
             elif note_name in [START_SYMBOL, END_SYMBOL]:
                 original_list.append(note_name)
             else:
@@ -380,165 +409,29 @@ def verify_tensor_dataset(json_path, tensor_path, subdivision=8, n=20):
                 else:
                     original_list.append('0_0')
 
-        # metadata
-        meta_row = metadata_tensor[i].tolist()  # (64, 2)
-        tick_list = [str(x[0]) for x in meta_row]
-        voice_list = [str(x[1]) for x in meta_row]
+        # metadata: (1, ticks, 6) -> (ticks, 6)
+        # [IsPlaying, Tick, Mode, Key, Fermata, voice_id]
+        meta_row = metadata_tensor[i][0].tolist()
+        is_playing = [str(x[0]) for x in meta_row]
+        tick_pos = [str(x[1]) for x in meta_row]
+        mode_val = [str(x[2]) for x in meta_row]
+        key_val = [str(x[3]) for x in meta_row]
+        fermata = [str(x[4]) for x in meta_row]
+        voice_id = [str(x[5]) for x in meta_row]
 
-        print(f"样本{i}:")
+        print(f"\n样本{i}:")
         print(f"  chorale:     {','.join(str(x) for x in row_data)}")
         print(f"  original:    {','.join(original_list)}")
-        print(f"  tick:        {','.join(tick_list)}")
-        print(f"  voice:       {','.join(voice_list)}")
+        print(f"  IsPlaying:   {','.join(is_playing)}")
+        print(f"  Tick:        {','.join(tick_pos)}")
+        print(f"  Mode:        {','.join(set(mode_val))} (all same, D major=1)")
+        print(f"  Key:         {','.join(set(key_val))} (all same, D major=10)")
+        print(f"  Fermata:     {','.join(set(fermata))} (all same, none=0)")
+        print(f"  voice_id:    {','.join(set(voice_id))} (all same)")
 
-    # 提取序列逻辑已注释
-    # # 反向映射: index -> pitch
-    # from DatasetManager.helpers import SLUR_SYMBOL, START_SYMBOL, END_SYMBOL, REST_SYMBOL
-    #
-    # # 合并相邻相同音
-    # print("\n" + "-" * 40)
-    # print("合并相邻tick的相同音:")
-    # print("-" * 40)
-    #
-    # # 从第一个样本提取完整序列
-    # sample_0 = chorale_tensor[0, 0, :]
-    # if isinstance(sample_0, torch.Tensor):
-    #     sample_0 = sample_0.numpy()
-    # total_ticks = len(sample_0)
-    #
-    # merged_notes = []
-    # prev_pitch, current_pitch = None, None
-    # current_duration = 0
-    #
-    # for tick in range(total_ticks):
-    #     idx = sample_0[tick]
-    #     note_name = index2note.get(int(idx), '?')
-    #     if note_name == SLUR_SYMBOL:
-    #         # 延续音符，增加duration
-    #         current_duration += 1
-    #     elif note_name in [START_SYMBOL, END_SYMBOL]:
-    #         # 忽略
-    #         continue
-    #     elif note_name == REST_SYMBOL:
-    #         # 休止符：结束当前音，开始休止
-    #         if current_pitch is not None:
-    #             value, octave = midi_to_solfege(current_pitch)
-    #             merged_notes.append({
-    #                 'tick': tick - current_duration,
-    #                 'value': value,
-    #                 'octave': octave,
-    #                 'duration': current_duration / subdivision,
-    #                 'midi': current_pitch
-    #             })
-    #             current_pitch = None
-    #             current_duration = 0
-    #         current_duration += 1
-    #     else:
-    #         # 实际音高
-    #         pitch = int(note_name) if note_name.isdigit() else 0
-
-    print(f"处理后样本数: {chorale_tensor.shape[0]}")
+    print(f"\n处理后样本数: {chorale_tensor.shape[0]}")
     print(f"每个样本: {chorale_tensor.shape[1]} 声部, {chorale_tensor.shape[2]} ticks")
-
-    # 反向映射: index -> pitch
-    # from DatasetManager.helpers import SLUR_SYMBOL, START_SYMBOL, END_SYMBOL, REST_SYMBOL
-
-    # # 合并相邻相同音
-    # print("\n" + "-" * 40)
-    # print("合并相邻tick的相同音:")
-    # print("-" * 40)
-
-    # # 从第一个样本提取完整序列
-    # sample_0 = chorale_tensor[0, 0, :]
-    # if isinstance(sample_0, torch.Tensor):
-    #     sample_0 = sample_0.numpy()
-    # total_ticks = len(sample_0)
-
-    # merged_notes = []
-    # prev_pitch, current_pitch = None, None
-    # current_duration = 0
-
-    # for tick in range(total_ticks):
-    #     idx = sample_0[tick]
-    #     note_name = index2note.get(int(idx), '?')
-    #     if note_name == SLUR_SYMBOL:
-    #         # 延续音符，增加duration
-    #         current_duration += 1
-    #     elif note_name in [START_SYMBOL, END_SYMBOL]:
-    #         # 忽略
-    #         continue
-    #     elif note_name == REST_SYMBOL:
-    #         # 休止符：结束当前音，开始休止
-    #         if current_pitch is not None:
-    #             value, octave = midi_to_solfege(current_pitch)
-    #             merged_notes.append({
-    #                 'tick': tick - current_duration,
-    #                 'value': value,
-    #                 'octave': octave,
-    #                 'duration': current_duration / subdivision,
-    #                 'midi': current_pitch
-    #             })
-    #             current_pitch = None
-    #             current_duration = 0
-    #         current_duration += 1
-    #     else:
-    #         # 实际音高
-    #         pitch = int(note_name) if note_name.isdigit() else 0
-
-    #         if pitch == current_pitch:
-    #             # 相同音持续（SLUR处理）
-    #             current_duration += 1
-    #         else:
-    #             # 新音符：先结束上一个
-    #             if current_pitch is not None:
-    #                 value, octave = midi_to_solfege(current_pitch)
-    #                 merged_notes.append({
-    #                     'tick': tick - current_duration,
-    #                     'value': value,
-    #                     'octave': octave,
-    #                     'duration': current_duration / subdivision,
-    #                     'midi': current_pitch
-    #                 })
-    #             # 开始新音符
-    #             current_pitch = pitch
-    #             current_duration = 1
-
-    # # 处理最后一个音符
-    # if current_pitch is not None:
-    #     value, octave = midi_to_solfege(current_pitch)
-    #     merged_notes.append({
-    #         'tick': total_ticks - current_duration,
-    #         'value': value,
-    #         'octave': octave,
-    #         'duration': current_duration / subdivision,
-    #         'midi': current_pitch
-    #     })
-
-    # print(f"\n合并后音符数: {len(merged_notes)}")
-    # print("\n前20个音符 (还原简谱格式):")
-    # print(f"{'tick':>6} {'value':>6} {'octave':>7} {'duration':>8} {'MIDI':>6}")
-    # print("-" * 40)
-    # for i, note in enumerate(merged_notes[:20]):
-    #     print(f"{note['tick']:>6} {note['value']:>6} {note['octave']:>7} {note['duration']:>8.2f} {note['midi']:>6}")
-
-    # # 与原始JSON对比
-    # print("\n" + "-" * 40)
-    # print("与原始JSON对比 (前10个音符):")
-    # print("-" * 40)
-    # print(f"{'原始value':>10} {'原始octave':>11} {'原始dur':>9} | {'还原value':>10} {'还原octave':>11} {'还原dur':>9}")
-    # print("-" * 60)
-    # for i, orig in enumerate(original_notes[:10]):
-    #     if i < len(merged_notes):
-    #         note = merged_notes[i]
-    #         orig_value = int(orig.get('value')) if orig.get('value') is not None else None
-    #         orig_octave = int(orig.get('octave', 0)) if orig.get('octave') is not None else 0
-    #         match = "OK" if (orig_value == note['value'] and orig_octave == note['octave']) else "FAIL"
-    #         print(f"{orig_value:>10} {orig_octave:>11} {orig.get('duration'):>9.2f} | "
-    #               f"{note['value']:>10} {note['octave']:>11} {note['duration']:>9.2f} {match}")
-    #     else:
-    #         print(f"{int(orig.get('value')):>10} {int(orig.get('octave', 0)):>11} {orig.get('duration'):>9.2f} | (无对应)")
-
-    return dataset
+    print(f"metadata维度: {metadata_tensor.shape}")
 
 
 if __name__ == '__main__':
