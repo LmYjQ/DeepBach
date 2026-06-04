@@ -191,8 +191,8 @@ class SimpleNotationDataset:
         p = stream.Part()
 
         current_duration = 0
-        for tick_idx in range(tensor_score.size(0)):
-            note_idx = tensor_score[tick_idx].item()
+        for tick_idx in range(tensor_score.size(1)):
+            note_idx = tensor_score[0, tick_idx].item()
             note_name = index2note.get(note_idx, '')
 
             if note_name == SLUR_SYMBOL:
@@ -248,8 +248,23 @@ def main():
                         help='训练轮数 (默认10)')
     parser.add_argument('--batch_size', '-b', type=int, default=16,
                         help='批次大小 (默认16)')
+    parser.add_argument('--models_dir', default='models',
+                        help='模型保存目录 (默认models)')
 
     args = parser.parse_args()
+
+    # 从数据路径提取后半段作为模型后缀
+    # 例如 D:/code/music/qmx_reader/dataset_final8 -> final8
+    import os
+    data_path = args.data
+    data_name = os.path.splitext(os.path.basename(data_path))[0]
+    # 取后半段：如果包含 "dataset_" 则取其后的部分，否则取最后一段
+    if '_' in data_name:
+        parts = data_name.split('_')
+        suffix = '_'.join(parts[1:]) if len(parts) > 1 else data_name
+    else:
+        suffix = data_name
+    print(f"数据名称: {data_name}, 模型后缀: {suffix}")
 
     # 加载数据集
     dataset = SimpleNotationDataset(args.data, subdivision=args.subdivision)
@@ -263,6 +278,8 @@ def main():
         lstm_hidden_size=args.lstm_hidden_size,
         dropout_lstm=args.dropout_lstm,
         linear_hidden_size=args.linear_hidden_size,
+        model_suffix=suffix,
+        models_dir=args.models_dir,
     )
 
     print("\n模型创建完成，开始训练...")
