@@ -76,9 +76,14 @@ def find_segments(ban_notes, total_ticks, context_beats=2):
         start_tick = all_boundaries[i]
         end_tick = all_boundaries[i + 1]
 
-        # 找到这个区间左右固定的音
-        left_fixed = ban_notes[i] if i < len(ban_notes) and ban_notes[i]['tick'] == start_tick else None
-        right_fixed = ban_notes[i + 1] if i + 1 < len(ban_notes) and ban_notes[i + 1]['tick'] == end_tick else None
+        # 按tick值查找左右固定的音，不是按数组索引
+        left_fixed = None
+        right_fixed = None
+        for bn in ban_notes:
+            if bn['tick'] == start_tick:
+                left_fixed = bn
+            if bn['tick'] == end_tick:
+                right_fixed = bn
 
         # 如果区间太小，不需要生成
         if end_tick - start_tick <= 1:
@@ -96,11 +101,13 @@ def find_segments(ban_notes, total_ticks, context_beats=2):
     return segments
 
 
-def create_tensor_from_json(notes, subdivision):
+def create_tensor_from_json(notes, dataset, subdivision):
     """
     将JSON音符转换为DeepBach可用的chorale_tensor和metadata_tensor
+    需要用dataset的note2index将MIDI pitch转为模型索引
     """
     num_voices = 1
+    note2index = dataset.note2index_dicts[0]
 
     # 计算总tick数
     total_ticks = 0
@@ -115,7 +122,6 @@ def create_tensor_from_json(notes, subdivision):
 
     current_tick = 0
     for note in notes:
-        # 找到音符对应的index
         value = note['value']
         octave = note.get('octave', 0)
         dotted = note.get('dotted', False)
@@ -129,11 +135,15 @@ def create_tensor_from_json(notes, subdivision):
         else:
             midi_pitch = 60  # 默认
 
+        # 转MIDI pitch为模型索引
+        note_name = str(midi_pitch)
+        note_idx = note2index.get(note_name, note2index.get('60', 0))
+
         # 设置chorale_tensor (这个音符占据的ticks)
         note_ticks = int(note['duration'] * subdivision)
         for t in range(note_ticks):
             if current_tick + t < total_ticks:
-                chorale_tensor[0, current_tick + t] = midi_pitch
+                chorale_tensor[0, current_tick + t] = note_idx
 
         # 记录metadata (tick, mode, key, fermata, voice_id)
         for t in range(note_ticks):
@@ -155,17 +165,17 @@ def create_tensor_from_json(notes, subdivision):
 
 
 def generate_segment(deepbach, chorale_tensor, metadata_tensor,
-                    start_tick, end_tick, fixed_notes,
+                    start_tick, end_tick, fixed_notes, note2index,
                     temperature=1.0, num_iterations=300, batch_size=8):
     """
     生成一个片段
 
-    fixed_notes: dict with 'left_fixed' and 'right_fixed', each is (tick, midi_pitch) or None
+    fixed_notes: dict with 'left_fixed' and 'right_fixed', each is (tick, note_data) or None
+    note2index: dict to convert MIDI pitch to model index
     """
     seq_length = end_tick - start_tick
 
     # 创建完整的序列tensor
-    # 如果没有tensor_chorale，创建空的
     if chorale_tensor is None:
         tensor_chorale = deepbach.dataset.empty_score_tensor(seq_length)
     else:
@@ -184,8 +194,21 @@ def generate_segment(deepbach, chorale_tensor, metadata_tensor,
 
     if left_fixed is not None:
         gen_start = left_fixed['tick'] + 1
+        # 将左固定音设置到tensor_chorale中 (相对位置)
+        midi_pitch = int(left_fixed['value']) + 60 + left_fixed.get('octave', 0)
+        note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
+        rel_pos = left_fixed['tick'] - start_tick
+        if 0 <= rel_pos < seq_length:
+            tensor_chorale[0, rel_pos] = note_idx
+
     if right_fixed is not None:
         gen_end = right_fixed['tick']
+        # 将右固定音设置到tensor_chorale中 (相对位置)
+        midi_pitch = int(right_fixed['value']) + 60 + right_fixed.get('octave', 0)
+        note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
+        rel_pos = right_fixed['tick'] - start_tick
+        if 0 <= rel_pos < seq_length:
+            tensor_chorale[0, rel_pos] = note_idx
 
     # 相对位置
     rel_gen_start = gen_start - start_tick
@@ -206,7 +229,7 @@ def generate_segment(deepbach, chorale_tensor, metadata_tensor,
         num_iterations=num_iterations,
         sequence_length_ticks=seq_length,
         time_index_range_ticks=[rel_gen_start, rel_gen_end],
-        random_init=True,
+        random_init=False,
     )
 
     return score, result_tensor
@@ -311,7 +334,7 @@ def main():
 
     # 6. 创建tensor数据
     print("\n创建tensor数据...")
-    chorale_tensor, metadata_tensor, total_ticks = create_tensor_from_json(notes, args.subdivision)
+    chorale_tensor, metadata_tensor, total_ticks = create_tensor_from_json(notes, dataset, args.subdivision)
     print(f"  chorale_tensor: {chorale_tensor.shape}")
     print(f"  metadata_tensor: {metadata_tensor.shape}")
     print(f"  total_ticks: {total_ticks}")
@@ -319,6 +342,7 @@ def main():
     # 7. 对每一段调用generation
     print("\n开始生成...")
     generated_ticks = []
+    note2index = dataset.note2index_dicts[0]
 
     for i, seg in enumerate(segments):
         print(f"\n=== 段 {i} ===")
@@ -332,6 +356,7 @@ def main():
             seg['start'],
             seg['end'],
             {'left_fixed': seg['left_fixed'], 'right_fixed': seg['right_fixed']},
+            note2index,
             temperature=args.temperature,
             num_iterations=args.num_iterations,
             batch_size=args.batch_size,
