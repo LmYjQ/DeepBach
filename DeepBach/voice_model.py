@@ -22,11 +22,15 @@ class VoiceModel(nn.Module):
                  num_layers: int,
                  lstm_hidden_size: int,
                  dropout_lstm: float,
-                 hidden_size_linear=200
+                 hidden_size_linear=200,
+                 model_suffix: str = "",
+                 models_dir: str = "models"
                  ):
         super(VoiceModel, self).__init__()
         self.dataset = dataset
         self.main_voice_index = main_voice_index
+        self.model_suffix = model_suffix
+        self.models_dir = models_dir
         self.note_embedding_dim = note_embedding_dim
         self.meta_embedding_dim = meta_embedding_dim
         self.num_notes_per_voice = [len(d)
@@ -188,19 +192,24 @@ class VoiceModel(nn.Module):
 
     def save(self):
         import os
-        os.makedirs('models', exist_ok=True)
-        safe_name = f"voicemodel_{self.main_voice_index}"
-        torch.save(self.state_dict(), f'models/{safe_name}.pt')
-        print(f'Model saved to models/{safe_name}.pt')
+        os.makedirs(self.models_dir, exist_ok=True)
+        if self.model_suffix:
+            safe_name = f"voicemodel_{self.model_suffix}_{self.main_voice_index}"
+        else:
+            safe_name = f"voicemodel_{self.main_voice_index}"
+        torch.save(self.state_dict(), f'{self.models_dir}/{safe_name}.pt')
+        print(f'Model saved to {self.models_dir}/{safe_name}.pt')
 
     def load(self):
         import os
-        os.makedirs('models', exist_ok=True)
-        safe_name = f"voicemodel_{self.main_voice_index}"
-        state_dict = torch.load(f'models/{safe_name}.pt',
+        if self.model_suffix:
+            safe_name = f"voicemodel_{self.model_suffix}_{self.main_voice_index}"
+        else:
+            safe_name = f"voicemodel_{self.main_voice_index}"
+        state_dict = torch.load(f'{self.models_dir}/{safe_name}.pt',
                                 map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
                                 weights_only=True)
-        print(f'Loading models/{safe_name}.pt')
+        print(f'Loading {self.models_dir}/{safe_name}.pt')
         self.load_state_dict(state_dict)
 
     def __repr__(self):

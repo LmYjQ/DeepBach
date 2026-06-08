@@ -22,6 +22,8 @@ class DeepBach:
                  lstm_hidden_size,
                  dropout_lstm,
                  linear_hidden_size,
+                 model_suffix: str = "",
+                 models_dir: str = "models"
                  ):
         self.dataset = dataset
         self.num_voices = self.dataset.num_voices
@@ -37,6 +39,8 @@ class DeepBach:
             lstm_hidden_size=lstm_hidden_size,
             dropout_lstm=dropout_lstm,
             hidden_size_linear=linear_hidden_size,
+            model_suffix=model_suffix,
+            models_dir=models_dir,
         )
             for main_voice_index in range(self.num_voices)
         ]
@@ -244,7 +248,8 @@ class DeepBach:
         for iteration in tqdm(range(num_iterations)):
             # annealing
             temperature = max(min_temperature, temperature * 0.9993)
-            # print(temperature)
+            if iteration % 100 == 0:
+                print(f"  iteration {iteration}, temperature: {temperature:.4f}")
             time_indexes_ticks = {}
             probas = {}
 

@@ -14,6 +14,30 @@ from train_simple_notation import SimpleNotationDataset
 from DeepBach.model_manager import DeepBach
 
 
+def midi_to_value_octave(midi_pitch):
+    """将MIDI pitch转换回JSON的value和octave格式"""
+    if midi_pitch == 0:
+        return '0', 0
+    for octave in [1, 0, -1]:
+        value = midi_pitch - 60 - octave
+        if 0 <= value <= 7:
+            return str(value), octave
+    return str(midi_pitch - 60), 0
+
+
+def idx_to_note_str(idx, index2note):
+    """将索引转换为JSON格式的音符字符串"""
+    note_str = index2note.get(idx, str(idx))
+    if note_str.isdigit():
+        midi = int(note_str)
+        value, octave = midi_to_value_octave(midi)
+        return f"{value}(o{octave})"
+    elif note_str in ('REST', '0'):
+        return '0'
+    else:
+        return note_str
+
+
 def load_json_notes(json_path):
     """加载JSON格式的简谱音符数据"""
     with open(json_path, 'r', encoding='utf-8') as f:
@@ -166,7 +190,7 @@ def create_tensor_from_json(notes, dataset, subdivision):
 
 def generate_segment(deepbach, chorale_tensor, metadata_tensor,
                     start_tick, end_tick, fixed_notes, note2index,
-                    temperature=1.0, num_iterations=300, batch_size=8):
+                    temperature=1.0, num_iterations=500, batch_size=8):
     """
     生成一个片段
 
@@ -175,52 +199,57 @@ def generate_segment(deepbach, chorale_tensor, metadata_tensor,
     """
     seq_length = end_tick - start_tick
 
-    # 创建完整的序列tensor
-    if chorale_tensor is None:
-        tensor_chorale = deepbach.dataset.empty_score_tensor(seq_length)
-    else:
-        tensor_chorale = torch.from_numpy(chorale_tensor[:, start_tick:end_tick]).long()
-
-    # metadata
-    tensor_metadata = torch.from_numpy(metadata_tensor[:, start_tick:end_tick, :]).long()
-
-    # 找出需要固定的音的位置
+    # 如果有固定的左音，从它之后开始生成；否则从头开始
     left_fixed = fixed_notes.get('left_fixed')
     right_fixed = fixed_notes.get('right_fixed')
 
-    # 计算生成范围（排除两端固定的音）
-    gen_start = start_tick
-    gen_end = end_tick
-
+    # 计算生成范围（相对位置，排除固定音）
+    gen_start = 0  # 默认从头开始
     if left_fixed is not None:
-        gen_start = left_fixed['tick'] + 1
-        # 将左固定音设置到tensor_chorale中 (相对位置)
-        midi_pitch = int(left_fixed['value']) + 60 + left_fixed.get('octave', 0)
-        note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
-        rel_pos = left_fixed['tick'] - start_tick
-        if 0 <= rel_pos < seq_length:
-            tensor_chorale[0, rel_pos] = note_idx
+        gen_start = left_fixed['tick'] - start_tick + 1
 
+    gen_end = seq_length  # 默认到结尾
     if right_fixed is not None:
-        gen_end = right_fixed['tick']
-        # 将右固定音设置到tensor_chorale中 (相对位置)
-        midi_pitch = int(right_fixed['value']) + 60 + right_fixed.get('octave', 0)
-        note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
-        rel_pos = right_fixed['tick'] - start_tick
-        if 0 <= rel_pos < seq_length:
-            tensor_chorale[0, rel_pos] = note_idx
+        gen_end = right_fixed['tick'] - start_tick
 
     # 相对位置
-    rel_gen_start = gen_start - start_tick
-    rel_gen_end = gen_end - start_tick
+    rel_gen_start = gen_start
+    rel_gen_end = gen_end
 
-    print(f"  生成范围: tick {gen_start} ~ {gen_end} (相对 {rel_gen_start} ~ {rel_gen_end})")
+    print(f"  生成范围: 相对 {rel_gen_start} ~ {gen_end} (共 {gen_end - gen_start} ticks)")
 
     if rel_gen_start >= rel_gen_end:
         print(f"  跳过，无需要生成的区域")
         return None, tensor_chorale
 
-    # 调用generation，只重生成中间的音
+    # 从chorale_tensor复制已有内容到tensor_chorale
+    tensor_chorale = torch.from_numpy(chorale_tensor[:, start_tick:end_tick]).long()
+
+    # metadata
+    tensor_metadata = torch.from_numpy(metadata_tensor[:, start_tick:end_tick, :]).long()
+
+    # 把固定音写入tensorChorale
+    if left_fixed is not None:
+        midi_pitch = int(left_fixed['value']) + 60 + left_fixed.get('octave', 0)
+        note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
+        rel_pos = left_fixed['tick'] - start_tick
+        if 0 <= rel_pos < seq_length:
+            tensor_chorale[0, rel_pos] = note_idx
+            print(f"  左固定: tick={left_fixed['tick']}, value={left_fixed['value']}, midi={midi_pitch}, idx={note_idx}")
+
+    if right_fixed is not None:
+        midi_pitch = int(right_fixed['value']) + 60 + right_fixed.get('octave', 0)
+        note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
+        rel_pos = right_fixed['tick'] - start_tick
+        if 0 <= rel_pos < seq_length:
+            tensor_chorale[0, rel_pos] = note_idx
+            print(f"  右固定: tick={right_fixed['tick']}, value={right_fixed['value']}, midi={midi_pitch}, idx={note_idx}")
+
+    # 调用generation，随机初始化生成范围
+    print(f"  生成前 tensor_chorale: {tensor_chorale.shape}")
+    print(f"    索引: {tensor_chorale[0].tolist()}")
+    print(f"    音符: {[idx_to_note_str(i, note2index) for i in tensor_chorale[0].tolist()]}")
+
     score, result_tensor, result_metadata = deepbach.generation(
         tensor_chorale=tensor_chorale,
         tensor_metadata=tensor_metadata,
@@ -229,8 +258,27 @@ def generate_segment(deepbach, chorale_tensor, metadata_tensor,
         num_iterations=num_iterations,
         sequence_length_ticks=seq_length,
         time_index_range_ticks=[rel_gen_start, rel_gen_end],
-        random_init=False,
+        random_init=True,
     )
+
+    print(f"  生成后 result_tensor: {result_tensor.shape}")
+    print(f"    索引: {result_tensor[0].tolist()}")
+    print(f"    音符: {[idx_to_note_str(i, note2index) for i in result_tensor[0].tolist()]}")
+
+    # generation结束后把固定音写回结果（因为random_init=True会在生成范围内随机初始化）
+    if left_fixed is not None:
+        rel_pos = left_fixed['tick'] - start_tick
+        if 0 <= rel_pos < result_tensor.size(1):
+            midi_pitch = int(left_fixed['value']) + 60 + left_fixed.get('octave', 0)
+            note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
+            result_tensor[0, rel_pos] = note_idx
+
+    if right_fixed is not None:
+        rel_pos = right_fixed['tick'] - start_tick
+        if 0 <= rel_pos < result_tensor.size(1):
+            midi_pitch = int(right_fixed['value']) + 60 + right_fixed.get('octave', 0)
+            note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
+            result_tensor[0, rel_pos] = note_idx
 
     return score, result_tensor
 
@@ -247,7 +295,7 @@ def main():
                         help='输出MIDI文件路径')
     parser.add_argument('--models_dir', default='models',
                         help='模型目录 (默认models)')
-    parser.add_argument('--num_iterations', '-n', type=int, default=300,
+    parser.add_argument('--num_iterations', '-n', type=int, default=500,
                         help='Gibbs采样迭代次数 (默认300)')
     parser.add_argument('--batch_size', '-b', type=int, default=8,
                         help='batch大小 (默认8)')
@@ -329,8 +377,34 @@ def main():
         models_dir=args.models_dir,
     )
 
-    print("加载模型...")
+    # 打印模型配置信息
+    print("\n=== 模型配置 ===")
+    print(f"  模型后缀: {model_suffix}")
+    print(f"  模型目录: {args.models_dir}")
+    print(f"  音符嵌入维度: {args.note_embedding_dim}")
+    print(f"  元数据嵌入维度: {args.meta_embedding_dim}")
+    print(f"  LSTM层数: {args.num_layers}")
+    print(f"  LSTM隐藏大小: {args.lstm_hidden_size}")
+    print(f"  LSTM dropout: {args.dropout_lstm}")
+    print(f"  线性层隐藏大小: {args.linear_hidden_size}")
+
+    # 检查模型文件是否存在
+    import os
+    expected_model_file = os.path.join(args.models_dir, f"voicemodel_{model_suffix}_0.pt")
+    print(f"\n期望的模型文件: {expected_model_file}")
+    print(f"文件存在: {os.path.exists(expected_model_file)}")
+
+    # 列出models目录下所有文件
+    if os.path.exists(args.models_dir):
+        print(f"\n{args.models_dir} 目录下的文件:")
+        for f in os.listdir(args.models_dir):
+            print(f"  {f}")
+    else:
+        print(f"\n警告: 模型目录 {args.models_dir} 不存在!")
+
+    print("\n开始加载模型...")
     deepbach.load()
+    print("模型加载完成!")
 
     # 6. 创建tensor数据
     print("\n创建tensor数据...")
@@ -339,49 +413,82 @@ def main():
     print(f"  metadata_tensor: {metadata_tensor.shape}")
     print(f"  total_ticks: {total_ticks}")
 
-    # 7. 对每一段调用generation
+    # 7. 级联生成：上一段的输出直接作为下一段的上下文
     print("\n开始生成...")
-    generated_ticks = []
     note2index = dataset.note2index_dicts[0]
+    index2note = dataset.index2note_dicts[0]
+    print(f"  note2index 大小: {len(note2index)}")
+    print(f"  index2note 示例: {dict(list(index2note.items())[:20])}")
 
     for i, seg in enumerate(segments):
         print(f"\n=== 段 {i} ===")
 
-        # 对于第一段，从随机初始化开始；对于后续段，基于上一段结果
-        # 这里简化处理：每次都传入完整的tensor_chorale
+        left_fixed = seg['left_fixed']
+        right_fixed = seg['right_fixed']
+
+        # 级联生成：对于后续段，使用更新后的chorale_tensor
+        print(f"  级联上下文: chorale_tensor[{seg['start']}:{seg['end']}] = {chorale_tensor[0, seg['start']:seg['end']].tolist()}")
         score, result_tensor = generate_segment(
             deepbach,
             chorale_tensor,
             metadata_tensor,
             seg['start'],
             seg['end'],
-            {'left_fixed': seg['left_fixed'], 'right_fixed': seg['right_fixed']},
+            {'left_fixed': left_fixed, 'right_fixed': right_fixed},
             note2index,
             temperature=args.temperature,
             num_iterations=args.num_iterations,
             batch_size=args.batch_size,
         )
 
-        # 保存生成的片段到总结果
-        gen_start, gen_end = seg['to_generate']
-        for tick in range(gen_start, gen_end):
-            if tick < result_tensor.size(1):
-                generated_ticks.append((tick, result_tensor[0, tick - seg['start']].item()))
+        # 级联：把生成结果写回chorale_tensor，供下一段使用
+        seg_len = seg['end'] - seg['start']
+        if result_tensor is not None:
+            # 只更新本段的生成范围（排除左右固定音）
+            gen_start_abs = seg['start']
+            gen_end_abs = seg['end']
 
+            if left_fixed is not None:
+                gen_start_abs = left_fixed['tick'] + 1
+            if right_fixed is not None:
+                gen_end_abs = right_fixed['tick']
+
+                       # 将结果写回chorale_tensor
+            for abs_tick in range(gen_start_abs, gen_end_abs):
+                rel_tick = abs_tick - seg['start']
+                if 0 <= rel_tick < result_tensor.size(1):
+                    chorale_tensor[0, abs_tick] = result_tensor[0, rel_tick].item()
+
+        # 打印上下文中的固定音
+        left_in_ctx = left_fixed is not None
+        right_in_ctx = right_fixed is not None
+        print(f"  上下文可见: 左固定={left_in_ctx}, 右固定={right_in_ctx}")
         print(f"  生成完成")
 
     # 8. 合并结果并保存
     print("\n合并结果...")
 
-    # 创建完整的chorale tensor，将ban=1的音保留，其余用生成的填充
-    final_tensor = chorale_tensor.copy()
+    # 级联生成完成后，chorale_tensor已经被更新为最终结果
+    # 但ban=1的固定音可能还是旧值，需要写回去
+    print("\n写回固定音...")
+    for i, seg in enumerate(segments):
+        left_fixed = seg['left_fixed']
+        right_fixed = seg['right_fixed']
 
-    for tick, pitch in generated_ticks:
-        if tick < final_tensor.shape[1]:
-            final_tensor[0, tick] = pitch
+        if left_fixed is not None:
+            midi_pitch = int(left_fixed['value']) + 60 + left_fixed.get('octave', 0)
+            note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
+            chorale_tensor[0, left_fixed['tick']] = note_idx
+            print(f"  写回左固定: tick={left_fixed['tick']}, value={left_fixed['value']}, idx={note_idx}")
+
+        if right_fixed is not None:
+            midi_pitch = int(right_fixed['value']) + 60 + right_fixed.get('octave', 0)
+            note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
+            chorale_tensor[0, right_fixed['tick']] = note_idx
+            print(f"  写回右固定: tick={right_fixed['tick']}, value={right_fixed['value']}, idx={note_idx}")
 
     # 转回torch tensor
-    final_torch = torch.from_numpy(final_tensor).long()
+    final_torch = torch.from_numpy(chorale_tensor).long()
 
     # 创建metadata tensor
     metadata_torch = torch.from_numpy(metadata_tensor).long()
