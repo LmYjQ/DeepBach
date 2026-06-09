@@ -15,14 +15,28 @@ from DeepBach.model_manager import DeepBach
 
 
 def midi_to_value_octave(midi_pitch):
-    """将MIDI pitch转换回JSON的value和octave格式"""
+    """将MIDI pitch转换回JSON的value和octave格式
+
+    正向转换: midi = base_midi + octave * 12
+    base_midi: 1→60, 2→62, 3→64, 4→65, 5→67, 6→69, 7→71
+    octave: -1, 0, 1
+
+    反向: 遍历octave和value组合，找到匹配的midi
+    """
     if midi_pitch == 0:
         return '0', 0
+
+    SOLFEGE_TO_MIDI_BASE = {
+        1: 60, 2: 62, 3: 64, 4: 65, 5: 67, 6: 69, 7: 71
+    }
+
     for octave in [1, 0, -1]:
-        value = midi_pitch - 60 - octave
-        if 0 <= value <= 7:
-            return str(value), octave
-    return str(midi_pitch - 60), 0
+        remaining = midi_pitch - octave * 12
+        for value, base_midi in SOLFEGE_TO_MIDI_BASE.items():
+            if remaining == base_midi:
+                return str(value), octave
+
+    return str(midi_pitch), 0
 
 
 def idx_to_note_str(idx, index2note):
@@ -32,8 +46,6 @@ def idx_to_note_str(idx, index2note):
         midi = int(note_str)
         value, octave = midi_to_value_octave(midi)
         return f"{value}(o{octave})"
-    elif note_str in ('REST', '0'):
-        return '0'
     else:
         return note_str
 
@@ -189,7 +201,7 @@ def create_tensor_from_json(notes, dataset, subdivision):
 
 
 def generate_segment(deepbach, chorale_tensor, metadata_tensor,
-                    start_tick, end_tick, fixed_notes, note2index,
+                    start_tick, end_tick, fixed_notes, note2index, index2note,
                     temperature=1.0, num_iterations=500, batch_size=8):
     """
     生成一个片段
@@ -248,7 +260,7 @@ def generate_segment(deepbach, chorale_tensor, metadata_tensor,
     # 调用generation，随机初始化生成范围
     print(f"  生成前 tensor_chorale: {tensor_chorale.shape}")
     print(f"    索引: {tensor_chorale[0].tolist()}")
-    print(f"    音符: {[idx_to_note_str(i, note2index) for i in tensor_chorale[0].tolist()]}")
+    print(f"    音符: {[idx_to_note_str(i, index2note) for i in tensor_chorale[0].tolist()]}")
 
     score, result_tensor, result_metadata = deepbach.generation(
         tensor_chorale=tensor_chorale,
@@ -263,7 +275,7 @@ def generate_segment(deepbach, chorale_tensor, metadata_tensor,
 
     print(f"  生成后 result_tensor: {result_tensor.shape}")
     print(f"    索引: {result_tensor[0].tolist()}")
-    print(f"    音符: {[idx_to_note_str(i, note2index) for i in result_tensor[0].tolist()]}")
+    print(f"    音符: {[idx_to_note_str(i, index2note) for i in result_tensor[0].tolist()]}")
 
     # generation结束后把固定音写回结果（因为random_init=True会在生成范围内随机初始化）
     if left_fixed is not None:
@@ -436,6 +448,7 @@ def main():
             seg['end'],
             {'left_fixed': left_fixed, 'right_fixed': right_fixed},
             note2index,
+            index2note,
             temperature=args.temperature,
             num_iterations=args.num_iterations,
             batch_size=args.batch_size,
