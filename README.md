@@ -152,4 +152,3 @@ python deepBach.py --train --num_epochs 5
 
 # 4. 生成阶段不需要 --train，直接生成
 python deepBach.py
-

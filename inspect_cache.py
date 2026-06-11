@@ -3,6 +3,7 @@
 """
 import os
 import torch
+import numpy as np
 
 # 切换到code目录
 os.chdir(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
@@ -101,12 +102,26 @@ def main():
                     print(f"\n    metadata_tensor (元数据):")
                     print(f"      shape: {metadata.shape}")
                     print(f"      元数据类型: ['tick', 'fermata', 'key', 'padding']")
+
+                    # 统计每个元数据类型的取值分布
+                    metadata_names = ['tick', 'fermata', 'key', 'padding']
+                    for meta_idx, meta_name in enumerate(metadata_names):
+                        meta_values = metadata[:, :, :, meta_idx].numpy().flatten()
+                        unique, counts = np.unique(meta_values, return_counts=True)
+                        total = len(meta_values)
+                        print(f"\n      {meta_name} 取值分布 (共{total}个值):")
+                        for val, count in sorted(zip(unique, counts), key=lambda x: x[0]):
+                            pct = count / total * 100
+                            print(f"        值{val}: {count} 次 ({pct:.2f}%)")
+
                     print(f"\n      声部0前5个tick的各元数据值:")
                     for tick in range(5):
                         tick_val = metadata[0, 0, tick, 0].item()
                         fermata_val = metadata[0, 0, tick, 1].item()
                         key_val = metadata[0, 0, tick, 2].item()
-                        print(f"        tick {tick}: tick={tick_val}, fermata={fermata_val}, key={key_val}")
+                        padding_val = metadata[0, 0, tick, 3].item()
+
+                        print(f"        tick {tick}: tick={tick_val}, fermata={fermata_val}, key={key_val}, padding={padding_val}")
 
                     # 显示原始音符名
                     print(f"\n    将音高索引转回音符名 (声部0前10个tick):")
