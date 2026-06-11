@@ -103,6 +103,7 @@ class DeepBach:
                    tensor_chorale=None,
                    tensor_metadata=None,
                    time_index_range_ticks=None,
+                   time_index_list_ticks=None,
                    voice_index_range=None,
                    fermatas=None,
                    random_init=True
@@ -117,6 +118,8 @@ class DeepBach:
         :param tensor_metadata:
         :param time_index_range_ticks: list of two integers [a, b] or None; can be used \
         to regenerate only the portion of the score between timesteps a and b
+        :param time_index_list_ticks: list of integers or None; if provided, these \
+        specific time positions will be excluded from random generation
         :param voice_index_range: list of two integers [a, b] or None; can be used \
         to regenerate only the portion of the score between voice_index a and b
         :param fermatas: list[Fermata]
@@ -167,6 +170,14 @@ class DeepBach:
             assert 0 <= a_ticks < b_ticks <= sequence_length_ticks
             time_index_range_ticks = [a_ticks + timesteps_ticks, b_ticks + timesteps_ticks]
 
+        # Validate and adjust time_index_list_ticks positions to match padded coordinates
+        if time_index_list_ticks:
+            for pos in time_index_list_ticks:
+                assert 0 <= pos < sequence_length_ticks, \
+                    f"time_index_list_ticks position {pos} outside valid range [0, {sequence_length_ticks})"
+            # Adjust to padded coordinate system (same as time_index_range_ticks)
+            time_index_list_ticks = [pos + timesteps_ticks for pos in time_index_list_ticks]
+
         if voice_index_range is None:
             voice_index_range = [0, self.dataset.num_voices]
 
@@ -196,6 +207,7 @@ class DeepBach:
             temperature=temperature,
             batch_size_per_voice=batch_size_per_voice,
             time_index_range_ticks=time_index_range_ticks,
+            time_index_list_ticks=time_index_list_ticks,
             voice_index_range=voice_index_range,
         )
 
@@ -219,6 +231,7 @@ class DeepBach:
                        batch_size_per_voice=16,
                        temperature=1.,
                        time_index_range_ticks=None,
+                       time_index_list_ticks=None,
                        voice_index_range=None,
                        ):
         """
@@ -234,6 +247,8 @@ class DeepBach:
         :param temperature: final temperature after simulated annealing
         :param time_index_range_ticks: list of two integers [a, b] or None; can be used \
         to regenerate only the portion of the score between timesteps a and b
+        :param time_index_list_ticks: list of integers or None; if provided, these \
+        specific time positions will be excluded from random generation
         :param voice_index_range: list of two integers [a, b] or None; can be used \
         to regenerate only the portion of the score between voice_index a and b
         :return: (num_voices, chorale_length) tensor
@@ -268,8 +283,15 @@ class DeepBach:
 
                 # create batches of inputs
                 for batch_index in range(batch_size_per_voice):
-                    time_index_ticks = np.random.randint(
-                        *time_index_range_ticks)
+                    if time_index_list_ticks:
+                        # Build list of allowed positions (exclude those in time_index_list_ticks)
+                        excluded_set = set(time_index_list_ticks)
+                        allowed_positions = [p for p in range(*time_index_range_ticks)
+                                              if p not in excluded_set]
+                        time_index_ticks = allowed_positions[np.random.randint(len(allowed_positions))]
+                    else:
+                        time_index_ticks = np.random.randint(
+                            *time_index_range_ticks)
                     time_indexes_ticks[voice_index].append(time_index_ticks)
 
                     notes, label = (self.voice_models[voice_index]
