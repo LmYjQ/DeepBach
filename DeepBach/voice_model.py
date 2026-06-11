@@ -5,6 +5,7 @@
 import random
 import re
 import torch
+from tqdm import tqdm
 from DatasetManager.chorale_dataset import ChoraleDataset
 from DeepBach.helpers import cuda_variable, init_hidden
 
@@ -279,6 +280,8 @@ class VoiceModel(nn.Module):
                     batch_size=16,
                     num_epochs=10,
                     optimizer=None):
+        cum_train_loss, cum_train_acc = 0.0, 0.0
+        cum_val_loss, cum_val_acc = 0.0, 0.0
         for epoch in range(num_epochs):
             print(f'===Epoch {epoch}===')
             (dataloader_train,
@@ -290,16 +293,20 @@ class VoiceModel(nn.Module):
             loss, acc = self.loss_and_acc(dataloader_train,
                                           optimizer=optimizer,
                                           phase='train')
-            print(f'Training loss: {loss}')
-            print(f'Training accuracy: {acc}')
+            cum_train_loss += loss
+            cum_train_acc += acc
+            print(f'Training loss: {loss} | Cumulative: {cum_train_loss / (epoch + 1):.4f}')
+            print(f'Training accuracy: {acc} | Cumulative: {cum_train_acc / (epoch + 1):.4f}')
             # writer.add_scalar('data/training_loss', loss, epoch)
             # writer.add_scalar('data/training_acc', acc, epoch)
 
             loss, acc = self.loss_and_acc(dataloader_val,
                                           optimizer=None,
                                           phase='test')
-            print(f'Validation loss: {loss}')
-            print(f'Validation accuracy: {acc}')
+            cum_val_loss += loss
+            cum_val_acc += acc
+            print(f'Validation loss: {loss} | Cumulative: {cum_val_loss / (epoch + 1):.4f}')
+            print(f'Validation accuracy: {acc} | Cumulative: {cum_val_acc / (epoch + 1):.4f}')
             self.save()
 
     def loss_and_acc(self, dataloader,
@@ -314,7 +321,7 @@ class VoiceModel(nn.Module):
             self.eval()
         else:
             raise NotImplementedError
-        for tensor_chorale, tensor_metadata in dataloader:
+        for tensor_chorale, tensor_metadata in tqdm(dataloader, desc=phase):
 
             # to Variable
             tensor_chorale = cuda_variable(tensor_chorale).long()
@@ -343,7 +350,7 @@ class VoiceModel(nn.Module):
             batch_loss = loss.item()
             average_loss += batch_loss
             average_acc += acc.item()
-            print(f'  [{phase}] batch loss: {batch_loss:.4f}, acc: {acc.item()/100:.2%}')
+            # print(f'  [{phase}] batch loss: {batch_loss:.4f}, acc: {acc.item()/100:.2%}')
 
         average_loss /= len(dataloader)
         average_acc /= len(dataloader)
