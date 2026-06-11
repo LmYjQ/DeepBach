@@ -7,11 +7,13 @@
 """
 import argparse
 import json
+import os
 import torch
 import numpy as np
 import music21
 from train_simple_notation import SimpleNotationDataset
 from DeepBach.model_manager import DeepBach
+from DeepBach.voice_model import parse_model_filename
 
 
 def midi_to_value_octave(midi_pitch):
@@ -162,10 +164,13 @@ def create_tensor_from_json(notes, dataset, subdivision):
         octave = note.get('octave', 0)
         dotted = note.get('dotted', False)
 
-        # MIDI pitch计算 (简谱value是相对音高)
-        if value.isdigit():
-            base_pitch = int(value) + 60  # 默认中央C=60
-            midi_pitch = base_pitch + octave
+        # MIDI pitch计算 - 使用与preprocess_chinese_score_batch.py相同的公式
+        SOLFEGE_TO_MIDI_BASE = {
+            1: 60, 2: 62, 3: 64, 4: 65, 5: 67, 6: 69, 7: 71
+        }
+        if value.isdigit() and int(value) in SOLFEGE_TO_MIDI_BASE:
+            base_midi = SOLFEGE_TO_MIDI_BASE[int(value)]
+            midi_pitch = base_midi + (octave * 12)
         elif value == '0':
             midi_pitch = 0  # 休止符
         else:
@@ -241,8 +246,11 @@ def generate_segment(deepbach, chorale_tensor, metadata_tensor,
     tensor_metadata = torch.from_numpy(metadata_tensor[:, start_tick:end_tick, :]).long()
 
     # 把固定音写入tensorChorale
+    SOLFEGE_TO_MIDI_BASE = {1: 60, 2: 62, 3: 64, 4: 65, 5: 67, 6: 69, 7: 71}
     if left_fixed is not None:
-        midi_pitch = int(left_fixed['value']) + 60 + left_fixed.get('octave', 0)
+        value = int(left_fixed['value'])
+        octave = left_fixed.get('octave', 0)
+        midi_pitch = SOLFEGE_TO_MIDI_BASE[value] + (octave * 12)
         note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
         rel_pos = left_fixed['tick'] - start_tick
         if 0 <= rel_pos < seq_length:
@@ -250,7 +258,9 @@ def generate_segment(deepbach, chorale_tensor, metadata_tensor,
             print(f"  左固定: tick={left_fixed['tick']}, value={left_fixed['value']}, midi={midi_pitch}, idx={note_idx}")
 
     if right_fixed is not None:
-        midi_pitch = int(right_fixed['value']) + 60 + right_fixed.get('octave', 0)
+        value = int(right_fixed['value'])
+        octave = right_fixed.get('octave', 0)
+        midi_pitch = SOLFEGE_TO_MIDI_BASE[value] + (octave * 12)
         note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
         rel_pos = right_fixed['tick'] - start_tick
         if 0 <= rel_pos < seq_length:
@@ -270,25 +280,30 @@ def generate_segment(deepbach, chorale_tensor, metadata_tensor,
         num_iterations=num_iterations,
         sequence_length_ticks=seq_length,
         time_index_range_ticks=[rel_gen_start, rel_gen_end],
-        random_init=True,
+        random_init=False,  # 不随机初始化，保持已有值（包括固定音）
     )
 
     print(f"  生成后 result_tensor: {result_tensor.shape}")
     print(f"    索引: {result_tensor[0].tolist()}")
     print(f"    音符: {[idx_to_note_str(i, index2note) for i in result_tensor[0].tolist()]}")
 
-    # generation结束后把固定音写回结果（因为random_init=True会在生成范围内随机初始化）
+    # generation结束后把固定音写回结果（确保固定音正确）
+    SOLFEGE_TO_MIDI_BASE = {1: 60, 2: 62, 3: 64, 4: 65, 5: 67, 6: 69, 7: 71}
     if left_fixed is not None:
         rel_pos = left_fixed['tick'] - start_tick
         if 0 <= rel_pos < result_tensor.size(1):
-            midi_pitch = int(left_fixed['value']) + 60 + left_fixed.get('octave', 0)
+            value = int(left_fixed['value'])
+            octave = left_fixed.get('octave', 0)
+            midi_pitch = SOLFEGE_TO_MIDI_BASE[value] + (octave * 12)
             note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
             result_tensor[0, rel_pos] = note_idx
 
     if right_fixed is not None:
         rel_pos = right_fixed['tick'] - start_tick
         if 0 <= rel_pos < result_tensor.size(1):
-            midi_pitch = int(right_fixed['value']) + 60 + right_fixed.get('octave', 0)
+            value = int(right_fixed['value'])
+            octave = right_fixed.get('octave', 0)
+            midi_pitch = SOLFEGE_TO_MIDI_BASE[value] + (octave * 12)
             note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
             result_tensor[0, rel_pos] = note_idx
 
@@ -301,12 +316,12 @@ def main():
                         help='简谱JSON文件路径')
     parser.add_argument('--data', '-d', required=True,
                         help='预处理生成的.pt文件路径')
+    parser.add_argument('--model', '-m', required=True,
+                        help='模型文件路径 (如 models/voicemodel_final8_ne50_me25_lh128_ll2_ld0.5_li128_0.pt)')
     parser.add_argument('--subdivision', '-s', type=int, default=8,
                         help='每拍tick数 (默认8)')
     parser.add_argument('--output', '-o', default='generated_multi.mid',
                         help='输出MIDI文件路径')
-    parser.add_argument('--models_dir', default='models',
-                        help='模型目录 (默认models)')
     parser.add_argument('--num_iterations', '-n', type=int, default=500,
                         help='Gibbs采样迭代次数 (默认300)')
     parser.add_argument('--batch_size', '-b', type=int, default=8,
@@ -315,20 +330,21 @@ def main():
                         help='采样温度 (默认1.0)')
     parser.add_argument('--context_beats', '-c', type=int, default=2,
                         help='每段保留的上下文beats数 (默认2)')
-    parser.add_argument('--note_embedding_dim', type=int, default=50,
-                        help='音符嵌入维度 (默认50)')
-    parser.add_argument('--meta_embedding_dim', type=int, default=25,
-                        help='元数据嵌入维度 (默认25)')
-    parser.add_argument('--num_layers', type=int, default=2,
-                        help='LSTM层数 (默认2)')
-    parser.add_argument('--lstm_hidden_size', type=int, default=128,
-                        help='LSTM隐藏层大小 (默认128)')
-    parser.add_argument('--dropout_lstm', type=float, default=0.5,
-                        help='LSTM dropout (默认0.5)')
-    parser.add_argument('--linear_hidden_size', type=int, default=128,
-                        help='线性层隐藏大小 (默认128)')
 
     args = parser.parse_args()
+
+    # 从模型文件名解析参数
+    model_filename = os.path.basename(args.model)
+    model_params = parse_model_filename(model_filename)
+    if model_params is None:
+        raise ValueError(f"无法从模型文件名解析参数: {model_filename}")
+    print(f"\n=== 从模型文件解析的参数 ===")
+    print(f"  note_embedding_dim: {model_params['note_embedding_dim']}")
+    print(f"  meta_embedding_dim: {model_params['meta_embedding_dim']}")
+    print(f"  lstm_hidden_size: {model_params['lstm_hidden_size']}")
+    print(f"  num_layers: {model_params['num_layers']}")
+    print(f"  dropout_lstm: {model_params['dropout_lstm']}")
+    print(f"  hidden_size_linear: {model_params['hidden_size_linear']}")
 
     # 1. 加载JSON数据
     notes, beats_per_bar = load_json_notes(args.json)
@@ -371,51 +387,25 @@ def main():
     print("\n加载数据集和模型...")
     dataset = SimpleNotationDataset(args.data, subdivision=args.subdivision)
 
-    # 从数据路径提取模型后缀
-    import os
-    data_name = os.path.splitext(os.path.basename(args.data))[0]
-    parts = data_name.split('_')
-    model_suffix = '_'.join(parts[1:]) if len(parts) > 1 else data_name
-
+    # 使用解析出的模型参数创建DeepBach实例
     deepbach = DeepBach(
         dataset=dataset,
-        note_embedding_dim=args.note_embedding_dim,
-        meta_embedding_dim=args.meta_embedding_dim,
-        num_layers=args.num_layers,
-        lstm_hidden_size=args.lstm_hidden_size,
-        dropout_lstm=args.dropout_lstm,
-        linear_hidden_size=args.linear_hidden_size,
-        model_suffix=model_suffix,
-        models_dir=args.models_dir,
+        note_embedding_dim=model_params['note_embedding_dim'],
+        meta_embedding_dim=model_params['meta_embedding_dim'],
+        num_layers=model_params['num_layers'],
+        lstm_hidden_size=model_params['lstm_hidden_size'],
+        dropout_lstm=model_params['dropout_lstm'],
+        linear_hidden_size=model_params['hidden_size_linear'],
+        model_suffix="",  # 不再使用model_suffix，改为直接传model_path
+        models_dir=os.path.dirname(args.model) or "models",
     )
 
-    # 打印模型配置信息
-    print("\n=== 模型配置 ===")
-    print(f"  模型后缀: {model_suffix}")
-    print(f"  模型目录: {args.models_dir}")
-    print(f"  音符嵌入维度: {args.note_embedding_dim}")
-    print(f"  元数据嵌入维度: {args.meta_embedding_dim}")
-    print(f"  LSTM层数: {args.num_layers}")
-    print(f"  LSTM隐藏大小: {args.lstm_hidden_size}")
-    print(f"  LSTM dropout: {args.dropout_lstm}")
-    print(f"  线性层隐藏大小: {args.linear_hidden_size}")
-
     # 检查模型文件是否存在
-    import os
-    expected_model_file = os.path.join(args.models_dir, f"voicemodel_{model_suffix}_0.pt")
-    print(f"\n期望的模型文件: {expected_model_file}")
-    print(f"文件存在: {os.path.exists(expected_model_file)}")
-
-    # 列出models目录下所有文件
-    if os.path.exists(args.models_dir):
-        print(f"\n{args.models_dir} 目录下的文件:")
-        for f in os.listdir(args.models_dir):
-            print(f"  {f}")
-    else:
-        print(f"\n警告: 模型目录 {args.models_dir} 不存在!")
+    print(f"\n模型文件: {args.model}")
+    print(f"文件存在: {os.path.exists(args.model)}")
 
     print("\n开始加载模型...")
-    deepbach.load()
+    deepbach.load(model_path=args.model)
     print("模型加载完成!")
 
     # 6. 创建tensor数据
@@ -484,21 +474,26 @@ def main():
     # 级联生成完成后，chorale_tensor已经被更新为最终结果
     # 但ban=1的固定音可能还是旧值，需要写回去
     print("\n写回固定音...")
+    SOLFEGE_TO_MIDI_BASE = {1: 60, 2: 62, 3: 64, 4: 65, 5: 67, 6: 69, 7: 71}
     for i, seg in enumerate(segments):
         left_fixed = seg['left_fixed']
         right_fixed = seg['right_fixed']
 
         if left_fixed is not None:
-            midi_pitch = int(left_fixed['value']) + 60 + left_fixed.get('octave', 0)
+            value = int(left_fixed['value'])
+            octave = left_fixed.get('octave', 0)
+            midi_pitch = SOLFEGE_TO_MIDI_BASE[value] + (octave * 12)
             note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
             chorale_tensor[0, left_fixed['tick']] = note_idx
-            print(f"  写回左固定: tick={left_fixed['tick']}, value={left_fixed['value']}, idx={note_idx}")
+            print(f"  写回左固定: tick={left_fixed['tick']}, value={left_fixed['value']}, midi={midi_pitch}, idx={note_idx}")
 
         if right_fixed is not None:
-            midi_pitch = int(right_fixed['value']) + 60 + right_fixed.get('octave', 0)
+            value = int(right_fixed['value'])
+            octave = right_fixed.get('octave', 0)
+            midi_pitch = SOLFEGE_TO_MIDI_BASE[value] + (octave * 12)
             note_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
             chorale_tensor[0, right_fixed['tick']] = note_idx
-            print(f"  写回右固定: tick={right_fixed['tick']}, value={right_fixed['value']}, idx={note_idx}")
+            print(f"  写回右固定: tick={right_fixed['tick']}, value={right_fixed['value']}, midi={midi_pitch}, idx={note_idx}")
 
     # 转回torch tensor
     final_torch = torch.from_numpy(chorale_tensor).long()

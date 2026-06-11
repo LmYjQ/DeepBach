@@ -54,12 +54,19 @@ class DeepBach:
                 self.voice_models[main_voice_index].cuda()
 
     # Utils
-    def load(self, main_voice_index=None):
+    def load(self, model_path=None, main_voice_index=None):
+        """加载模型
+
+        Args:
+            model_path: str, 模型文件路径(如 "models/voicemodel_final8_ne50_me25_lh128_ll2_ld0.5_li128_0.pt")
+                       如果为None，则使用voice_model自己的model_suffix构造路径
+            main_voice_index: int, 要加载的voice索引，None表示加载所有voice
+        """
         if main_voice_index is None:
             for voice_index in range(self.num_voices):
-                self.load(main_voice_index=voice_index)
+                self.load(model_path=model_path, main_voice_index=voice_index)
         else:
-            self.voice_models[main_voice_index].load()
+            self.voice_models[main_voice_index].load(model_path=model_path)
 
     def save(self, main_voice_index=None):
         if main_voice_index is None:

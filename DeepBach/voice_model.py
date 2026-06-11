@@ -3,7 +3,7 @@
 """
 
 import random
-
+import re
 import torch
 from DatasetManager.chorale_dataset import ChoraleDataset
 from DeepBach.helpers import cuda_variable, init_hidden
@@ -11,6 +11,45 @@ from DeepBach.helpers import cuda_variable, init_hidden
 from torch import nn
 
 from DeepBach.data_utils import reverse_tensor, mask_entry
+
+
+def parse_model_filename(filename):
+    """
+    从模型文件名解析出参数
+    文件名格式: voicemodel_{suffix}_ne{val}_me{val}_lh{val}_ll{val}_ld{val}_li{val}_{voice_index}.pt
+    或: voicemodel_ne{val}_me{val}_lh{val}_ll{val}_ld{val}_li{val}_{voice_index}.pt
+    返回: dict with keys note_embedding_dim, meta_embedding_dim, lstm_hidden_size,
+          num_layers, dropout_lstm, hidden_size_linear, main_voice_index
+    返回None如果解析失败
+    """
+    # 移除.pt后缀
+    name = filename.replace('.pt', '')
+    # 解析最后一部分(voice_index)
+    parts = name.split('_')
+    if len(parts) < 2:
+        return None
+    try:
+        main_voice_index = int(parts[-1])
+    except ValueError:
+        return None
+
+    # 解析参数部分 (倒数第二个开始往前)
+    # 找到ne开头的参数块
+    param_pattern = r'ne(\d+)_me(\d+)_lh(\d+)_ll(\d+)_ld([\d.]+)_li(\d+)'
+    joined = '_'.join(parts[:-1])  # 除了最后voice_index的部分
+    match = re.search(param_pattern, joined)
+    if not match:
+        return None
+
+    return {
+        'note_embedding_dim': int(match.group(1)),
+        'meta_embedding_dim': int(match.group(2)),
+        'lstm_hidden_size': int(match.group(3)),
+        'num_layers': int(match.group(4)),
+        'dropout_lstm': float(match.group(5)),
+        'hidden_size_linear': int(match.group(6)),
+        'main_voice_index': main_voice_index,
+    }
 
 
 class VoiceModel(nn.Module):
@@ -193,24 +232,36 @@ class VoiceModel(nn.Module):
     def save(self):
         import os
         os.makedirs(self.models_dir, exist_ok=True)
+        # 编码模型参数到文件名: ne=note_embedding, me=meta_embedding, lh=LSTM hidden, ll=layers, ld=dropout, li=linear
+        params = f"ne{self.note_embedding_dim}_me{self.meta_embedding_dim}_lh{self.lstm_hidden_size}_ll{self.num_layers}_ld{self.dropout_lstm}_li{self.hidden_size_linear}"
         if self.model_suffix:
-            safe_name = f"voicemodel_{self.model_suffix}_{self.main_voice_index}"
+            safe_name = f"voicemodel_{self.model_suffix}_{params}_{self.main_voice_index}"
         else:
-            safe_name = f"voicemodel_{self.main_voice_index}"
+            safe_name = f"voicemodel_{params}_{self.main_voice_index}"
         torch.save(self.state_dict(), f'{self.models_dir}/{safe_name}.pt')
         print(f'Model saved to {self.models_dir}/{safe_name}.pt')
 
-    def load(self):
+    def load(self, model_path=None):
         import os
-        if self.model_suffix:
-            safe_name = f"voicemodel_{self.model_suffix}_{self.main_voice_index}"
+        if model_path:
+            # 直接使用传入的完整模型文件路径
+            state_dict = torch.load(model_path,
+                                    map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+                                    weights_only=True)
+            print(f'Loading {model_path}')
+            self.load_state_dict(state_dict)
         else:
-            safe_name = f"voicemodel_{self.main_voice_index}"
-        state_dict = torch.load(f'{self.models_dir}/{safe_name}.pt',
-                                map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-                                weights_only=True)
-        print(f'Loading {self.models_dir}/{safe_name}.pt')
-        self.load_state_dict(state_dict)
+            # 使用model_suffix构造路径
+            params = f"ne{self.note_embedding_dim}_me{self.meta_embedding_dim}_lh{self.lstm_hidden_size}_ll{self.num_layers}_ld{self.dropout_lstm}_li{self.hidden_size_linear}"
+            if self.model_suffix:
+                safe_name = f"voicemodel_{self.model_suffix}_{params}_{self.main_voice_index}"
+            else:
+                safe_name = f"voicemodel_{params}_{self.main_voice_index}"
+            state_dict = torch.load(f'{self.models_dir}/{safe_name}.pt',
+                                    map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+                                    weights_only=True)
+            print(f'Loading {self.models_dir}/{safe_name}.pt')
+            self.load_state_dict(state_dict)
 
     def __repr__(self):
         return f'VoiceModel(' \
