@@ -3,7 +3,7 @@
 基于简谱数据中的ban=1标记，固定某些音位，一次性生成全部音乐
 
 用法:
-  python generate_constrained.py --json<json_file> --data <pt_file> --model <pt_model> --output generated.mid
+  python generate_constrained.py --json <json_file> --data <pt_file> --model <pt_model> --output generated.mid [--png]
 """
 import argparse
 import json
@@ -11,6 +11,9 @@ import os
 import torch
 import numpy as np
 import music21
+import matplotlib
+matplotlib.use('Agg')  # 无头模式，不弹窗
+import matplotlib.pyplot as plt
 from train_simple_notation import SimpleNotationDataset
 from DeepBach.model_manager import DeepBach
 from DeepBach.voice_model import parse_model_filename
@@ -152,6 +155,108 @@ def create_tensor_from_json(notes, dataset, subdivision):
     return chorale_tensor, metadata_tensor, total_ticks
 
 
+def render_to_png(score, output_path, subdivision=8):
+    """将 music21 Stream 渲染为 PNG 图片
+
+    绘制简谱风格的音符图：X轴时间，Y轴音高，显示简谱数字。
+    """
+    from music21 import stream, note, clef, meter, pitch
+
+    # 准备乐谱：添加拍号和 clef
+    s = stream.Score()
+    part = stream.Part()
+
+    # 添加拍号（默认4/4）
+    ts = meter.TimeSignature('4/4')
+    part.append(ts)
+
+    # 添加高音谱号
+    part.append(clef.TrebleClef())
+
+    # 将 score 的所有元素复制到 part
+    for el in score.elements:
+        if isinstance(el, note.Note):
+            part.append(el)
+        elif isinstance(el, note.Rest):
+            part.append(el)
+
+    s.append(part)
+
+    # 提取音符信息
+    notes_data = []  # [(beat_pos, midi_pitch, duration, value_str), ...]
+    current_beat = 0.0
+
+    for el in s.parts[0].elements:
+        if isinstance(el, meter.TimeSignature):
+            continue
+        elif isinstance(el, clef.Clef):
+            continue
+        elif isinstance(el, note.Note):
+            # 计算简谱数字
+            midi = int(el.pitch.ps)
+            value_str, octave = midi_to_value_octave(midi)
+            dur = el.duration.quarterLength
+            notes_data.append((current_beat, midi, dur, value_str, octave))
+            current_beat += dur
+        elif isinstance(el, note.Rest):
+            dur = el.duration.quarterLength
+            notes_data.append((current_beat, 0, dur, '0', 0))
+            current_beat += dur
+
+    if not notes_data:
+        print("  警告：无音符数据可渲染")
+        return
+
+    total_beats = current_beat
+
+    # 创建图形
+    fig, ax = plt.subplots(figsize=max(12, total_beats * 0.8), height=6)
+
+    # 设置五线谱背景
+    ax.set_xlim(-0.5, total_beats + 0.5)
+    # Y轴：MIDI 48-84 (C3-C6)
+    ax.set_ylim(45, 87)
+    ax.set_yticks(range(48, 87, 12))
+    ax.set_yticklabels(['C', 'C', 'C', 'C'])
+    ax.set_ylabel('Octave')
+
+    # 绘制五线谱线
+    for y in range(48, 84, 12):
+        for line_y in range(y, y + 5):
+            ax.axhline(y=line_y, color='black', linewidth=0.5, alpha=0.3)
+
+    # 绘制音符
+    SOLFEGE_TO_MIDI_BASE = {1: 60, 2: 62, 3: 64, 4: 65, 5: 67, 6: 69, 7: 71}
+
+    for beat_pos, midi, dur, value_str, octave in notes_data:
+        if midi == 0:  # 休止符
+            ax.text(beat_pos + dur/2, 60, '𝄽', fontsize=8, ha='center', va='center', color='gray')
+        else:
+            # 绘制音符矩形
+            rect = plt.Rectangle((beat_pos, midi - 0.3), dur, 0.6,
+                                facecolor='lightblue', edgecolor='black', linewidth=0.5)
+            ax.add_patch(rect)
+            # 显示简谱数字
+            ax.text(beat_pos + dur/2, midi, value_str, fontsize=9, ha='center', va='center', fontweight='bold')
+            # octave 标注
+            if octave != 0:
+                ax.text(beat_pos + dur + 0.1, midi, f'o{octave:+d}', fontsize=7, va='center', color='blue')
+
+    # 标记拍号
+    ax.text(0, 88, '4/4', fontsize=10, fontweight='bold')
+
+    ax.set_xlabel('Beat')
+    ax.set_title('Generated Score Preview')
+    ax.invert_yaxis()  # 高音在上
+    ax.set_aspect('auto')
+    ax.grid(True, alpha=0.2)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  PNG预览已保存: {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='约束生成 - 固定板音，一次性生成')
     parser.add_argument('--json', '-j', required=True,
@@ -170,6 +275,8 @@ def main():
                         help='batch大小 (默认8)')
     parser.add_argument('--temperature', '-t', type=float, default=1.0,
                         help='采样温度 (默认1.0)')
+    parser.add_argument('--png', action='store_true',
+                        help='同时生成PNG预览')
 
     args = parser.parse_args()
 
@@ -295,6 +402,11 @@ def main():
     mf.open(args.output, 'wb')
     mf.write()
     mf.close()
+
+    # 8. 生成 PNG 预览
+    if args.png:
+        png_path = args.output.replace('.mid', '.png')
+        render_to_png(score, png_path, subdivision=args.subdivision)
 
     print("生成完成!")
 
