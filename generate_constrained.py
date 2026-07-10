@@ -66,28 +66,61 @@ def load_json_notes(json_path):
 
 def notes_to_ticks(notes, subdivision):
     """
-    将音符列表转换为tick位置
+    将音符列表转换为tick位置，识别所有固定音位。
+
+    一个音被"固定"（记入 fixed_notes）的条件，满足任一即可：
+      * note['ban'] == 1 或 note['yan'] == 1（原 ban/yan 锚点），或
+      * 该音的起点恰好落在整数拍上 —— 即累计到当前时刻的拍数 acc
+        接近 round(acc)（误差 eps=1e-6）。这些是节拍锚点，让生成结果
+        保持与参考一致的节拍对齐。
+
+    参考实现见 sizhu_data/code/markov/generate_markov.py 中的
+    compute_fixed_positions 方法。
+
     返回:
-        ban_notes: list of (tick_pos, note_data) for notes with ban=1
+        fixed_notes: list of dict，每个 dict 包含 tick 位置与音符信息
         total_ticks: 总长度(ticks)
     """
     current_tick = 0
-    ban_notes = []
+    acc = 0.0          # 累计拍数
+    eps = 1e-6         # 浮点误差容忍
+    fixed_notes = []
 
     for note in notes:
-        if note['ban'] == 1:
-            ban_notes.append({
+        # 跳过小节线等非音符条目（与 preprocess_chinese_score_batch.py 保持一致）
+        raw_value = note.get('value', '')
+        if raw_value is None:
+            continue
+        if str(raw_value).lower() in ('bar', 'space'):
+            continue
+
+        ban = int(note.get('ban', 0))
+        yan = int(note.get('yan', 0))
+        on_beat = abs(acc - round(acc)) < eps
+
+        if ban == 1 or yan == 1 or on_beat:
+            # 标记固定原因，方便调试/打印
+            if ban == 1 or yan == 1:
+                reason = 'ban' if ban == 1 else 'yan'
+            else:
+                reason = f'beat{int(round(acc))}'
+
+            fixed_notes.append({
                 'tick': current_tick,
                 'id': note['id'],
                 'value': note['value'],
                 'octave': note.get('octave', 0),
                 'duration': note['duration'],
                 'dotted': note.get('dotted', False),
+                'ban': ban,
+                'yan': yan,
+                'reason': reason,
             })
 
+        acc += float(note['duration'])
         current_tick += int(note['duration'] * subdivision)
 
-    return ban_notes, current_tick
+    return fixed_notes, current_tick
 
 
 def create_tensor_from_json(notes, dataset, subdivision):
@@ -174,7 +207,16 @@ def render_to_png(score, output_path, subdivision=8):
     part.append(clef.TrebleClef())
 
     # 将 score 的所有元素复制到 part
-    for el in score.elements:
+    # score 是 Stream(Part(Notes...)) 的结构，需要下钻到 Part
+    # 注意：music21 10.x 中 score 可能没有 .parts 属性，统一用 getElementsByClass
+    parts_in_score = list(score.getElementsByClass('Part'))
+    if parts_in_score:
+        note_source = parts_in_score[0]
+    else:
+        # 兜底：直接当作 Part/Stream 处理
+        note_source = score
+
+    for el in note_source.elements:
         if isinstance(el, note.Note):
             part.append(el)
         elif isinstance(el, note.Rest):
@@ -210,7 +252,9 @@ def render_to_png(score, output_path, subdivision=8):
     total_beats = current_beat
 
     # 创建图形
-    fig, ax = plt.subplots(figsize=max(12, total_beats * 0.8), height=6)
+    # 注意：新版 matplotlib 不再支持 subplots() 的 height= 参数
+    fig_width = max(12, total_beats * 0.8)
+    fig, ax = plt.subplots(figsize=(fig_width, 6))
 
     # 设置五线谱背景
     ax.set_xlim(-0.5, total_beats + 0.5)
@@ -296,16 +340,25 @@ def main():
     # 1. 加载JSON数据
     notes, beats_per_bar = load_json_notes(args.json)
 
-    # 2. 找到所有ban=1的音作为固定位置
-    ban_notes, total_ticks = notes_to_ticks(notes, args.subdivision)
+    # 2. 找到所有固定音位：ban=1 / yan=1 / 整数拍起点
+    fixed_notes, total_ticks = notes_to_ticks(notes, args.subdivision)
 
-    print(f"\n找到 {len(ban_notes)} 个板音 (ban=1):")
-    for i, bn in enumerate(ban_notes):
-        print(f"  [{i}] tick={bn['tick']}, value={bn['value']}, octave={bn['octave']}")
+    # 分类统计
+    ban_count = sum(1 for n in fixed_notes if n['ban'] == 1)
+    yan_count = sum(1 for n in fixed_notes if n['yan'] == 1)
+    beat_count = sum(1 for n in fixed_notes if n['reason'].startswith('beat'))
+    print(f"\n找到 {len(fixed_notes)} 个固定音位 "
+          f"(ban={ban_count}, yan={yan_count}, 整数拍起点={beat_count}):")
+    for i, fn in enumerate(fixed_notes):
+        print(f"  [{i}] tick={fn['tick']:>3d}, beat={fn['tick']/args.subdivision:>5.2f}, "
+              f"value={fn['value']}, octave={fn['octave']}, reason={fn['reason']}")
 
     # 提取固定位置的tick列表
-    fixed_ticks = [bn['tick'] for bn in ban_notes]
+    # 注意：deepbach.generation() 要求 time_index_list_ticks 严格落在 [0, sequence_length_ticks) 内
+    # 末尾等于 total_ticks 的固定点必须剔除
+    fixed_ticks = [fn['tick'] for fn in fixed_notes if fn['tick'] < total_ticks]
     print(f"\n固定位置列表: {fixed_ticks}")
+    print(f"固定位置数量: {len(fixed_ticks)} / {len(fixed_notes)}")
 
     # 3. 加载数据集和模型
     print("\n加载数据集和模型...")
@@ -374,16 +427,20 @@ def main():
     SOLFEGE_TO_MIDI_BASE = {1: 60, 2: 62, 3: 64, 4: 65, 5: 67, 6: 69, 7: 71}
 
     all_correct = True
-    for bn in ban_notes:
-        value = int(bn['value'])
-        octave = bn.get('octave', 0)
-        midi_pitch = SOLFEGE_TO_MIDI_BASE[value] + (octave * 12)
+    for fn in fixed_notes:
+        value = int(fn['value'])
+        octave = fn.get('octave', 0)
+        # value=0 表示休止符
+        if value == 0:
+            midi_pitch = 0
+        else:
+            midi_pitch = SOLFEGE_TO_MIDI_BASE[value] + (octave * 12)
         expected_idx = note2index.get(str(midi_pitch), note2index.get('60', 0))
-        actual_idx = result_tensor[0, bn['tick']].item()
+        actual_idx = result_tensor[0, fn['tick']].item()
         is_correct = actual_idx == expected_idx
         all_correct = all_correct and is_correct
-        status = "✓" if is_correct else "✗"
-        print(f"  {status} tick={bn['tick']}, expected idx={expected_idx}, actual idx={actual_idx}")
+        status = "[OK]" if is_correct else "[X] "
+        print(f"  {status} tick={fn['tick']}, expected idx={expected_idx}, actual idx={actual_idx}")
 
     if all_correct:
         print("  校验通过：所有固定音均正确")
