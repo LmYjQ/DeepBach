@@ -112,3 +112,6 @@ DeepBach/datasets/custom_dataset/*.pickle
 !download_pretrained_data.sh
 DatasetManager/dataset_cache/
 models/
+
+*.mid
+exported_scores
