@@ -115,3 +115,18 @@ models/
 
 *.mid
 exported_scores
+
+# Beat-token pipeline generated artifacts
+models_beat/
+models_beat_jin/
+models_beat_tang/
+models_beat_zhou/
+models_beat_lu/
+preprocessed_beat_token/
+generated_jin.mid
+generated_tang.mid
+generated_zhou.mid
+generated_lu.mid
+generated_beat_demo.mid
+generated_beat_constrained.mid
+test_beat_decode.mid

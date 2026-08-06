@@ -79,3 +79,71 @@ class ShortChoraleIteratorGen:
             islice(music21.corpus.chorales.Iterator(), 3)
         )
         return it.__iter__()
+
+
+# ---------- Beat-level tokenization helpers ----------
+
+def beat_to_midi(pattern):
+    """
+    把一拍内编码的 pattern 字符串解码为 (midi_or_None, duration_in_beats) 列表。
+
+    Args:
+        pattern: 形如 ``"72@0.5|74@0.25|R@0.25"`` 的字符串，每个子项为
+                 ``"<midi_or_R>@<duration_in_beats>"``，时长之和通常为 1。
+
+    Returns:
+        list of (midi: int | None, duration: float)
+            - ``midi=None`` 表示休止符 (来自 ``R@...``)
+            - ``duration`` 单位为**拍** (quarterLength)，例如 0.5 = 半拍
+        若 ``pattern`` 为空/None，返回 ``[(None, 1.0)]`` 兜底。
+
+    Examples:
+        >>> beat_to_midi("72@1")
+        [(72, 1.0)]
+        >>> beat_to_midi("72@0.5|74@0.5")
+        [(72, 0.5), (74, 0.5)]
+        >>> beat_to_midi("R@0.5|62@0.5")
+        [(None, 0.5), (62, 0.5)]
+        >>> beat_to_midi("72@2")
+        [(72, 2.0)]
+    """
+    if not pattern:
+        return [(None, 1.0)]
+    out = []
+    for part in pattern.split('|'):
+        part = part.strip()
+        if not part:
+            continue
+        if '@' not in part:
+            # 兜底: 整段当作 MIDI 数字，整拍
+            try:
+                out.append((int(part), 1.0))
+            except ValueError:
+                out.append((None, 1.0))
+            continue
+        pitch_str, dur_str = part.split('@', 1)
+        try:
+            duration = float(dur_str)
+        except ValueError:
+            duration = 1.0
+        if pitch_str == 'R':
+            out.append((None, duration))
+        else:
+            try:
+                out.append((int(pitch_str), duration))
+            except ValueError:
+                out.append((None, duration))
+    if not out:
+        return [(None, 1.0)]
+    return out
+
+
+def is_beat_pattern(s):
+    """
+    粗略判断字符串是否为 beat-pattern（包含 '@' 子项分隔符）。
+    用于 ``SimpleNotationDataset.tensor_to_score`` 中决定走哪个解码分支。
+    """
+    if not isinstance(s, str):
+        return False
+    return '@' in s and s not in (SLUR_SYMBOL, START_SYMBOL, END_SYMBOL,
+                                   REST_SYMBOL, PAD_SYMBOL, OUT_OF_RANGE)

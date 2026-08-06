@@ -29,7 +29,10 @@ class SimpleNotationDataset:
         self.index2note_dicts = [self.data['index2note']]
         self.sequence_size = self.data['sequence_size']
         self.sequences_size = self.data['sequence_size']  # alias for DeepBach
-        self.subdivision = subdivision
+        # 如果 .pt 里写了 subdivision，优先用之（beat-token 数据强制为 1）。
+        # 这样命令行 --subdivision 就成了"兜底覆盖"而非"必填"。
+        self.subdivision = self.data.get('subdivision', subdivision)
+        self.token_kind = self.data.get('token_kind', 'tick')   # 'tick' | 'beat'
         self.num_voices = 1
 
         # Metadata types - 必须与 metadata_tensor[:,:,:,[1,2,3,4]] 的列顺序一致
@@ -181,20 +184,63 @@ class SimpleNotationDataset:
         return torch.stack(result, dim=0)
 
     def tensor_to_score(self, tensor_score, fermata_tensor=None):
-        """将tensor转换为music21 Score"""
+        """将tensor转换为music21 Score
+
+        支持两种模式:
+        - tick 级 (token_kind='tick'): 每个 tick 一个 MIDI pitch，duration=1/subdivision
+        - beat 级 (token_kind='beat'): 每个 token 是一个 pattern 字符串，调
+          ``beat_to_midi`` 拆解为多个 sub-note，duration 与原始 JSON 时值完全对应。
+        """
         from music21 import stream, note as m21note, duration
-        from DatasetManager.helpers import SLUR_SYMBOL, REST_SYMBOL, START_SYMBOL, END_SYMBOL
+        from DatasetManager.helpers import (
+            SLUR_SYMBOL, REST_SYMBOL, START_SYMBOL, END_SYMBOL,
+            beat_to_midi, is_beat_pattern,
+        )
 
         index2note = self.index2note_dicts[0]
-
         s = stream.Stream()
         p = stream.Part()
+
+        def _fermata_for(tick_idx):
+            if fermata_tensor is None:
+                return False
+            try:
+                return bool(fermata_tensor[tick_idx].item()
+                            if hasattr(fermata_tensor[tick_idx], 'item')
+                            else fermata_tensor[tick_idx])
+            except Exception:
+                return False
 
         current_duration = 0
         for tick_idx in range(tensor_score.size(1)):
             note_idx = tensor_score[0, tick_idx].item()
             note_name = index2note.get(note_idx, '')
+            fermata_here = _fermata_for(tick_idx)
 
+            # ---- Beat-pattern 分支 (token_kind='beat') ----
+            if is_beat_pattern(note_name):
+                if current_duration > 0:
+                    r = m21note.Rest()
+                    r.duration = duration.Duration(current_duration / self.subdivision)
+                    p.append(r)
+                    current_duration = 0
+                # 一个 pattern 可能含多个 sub-note
+                for sub_midi, sub_dur in beat_to_midi(note_name):
+                    if sub_midi is None:
+                        n = m21note.Rest()
+                    else:
+                        n = m21note.Note()
+                        n.pitch.ps = int(sub_midi)
+                    # sub_dur 单位是 "拍"，与 subdivision 解耦：
+                    # 拍 = quarterLength，无论 subdivision 是 8 还是 1 都成立。
+                    n.duration = duration.Duration(sub_dur)
+                    if fermata_here:
+                        from music21 import expressions
+                        n.expressions.append(expressions.Fermata())
+                    p.append(n)
+                continue
+
+            # ---- Tick 级分支 (token_kind='tick') ----
             if note_name == SLUR_SYMBOL:
                 current_duration += 1
                 continue
@@ -221,6 +267,11 @@ class SimpleNotationDataset:
                 n.pitch.ps = midi_pitch
                 n.duration = duration.Duration(1 / self.subdivision)
                 p.append(n)
+
+        if current_duration > 0:
+            r = m21note.Rest()
+            r.duration = duration.Duration(current_duration / self.subdivision)
+            p.append(r)
 
         s.append(p)
         return s
